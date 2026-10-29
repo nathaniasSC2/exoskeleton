@@ -68,7 +68,7 @@ func (s *Server) shadowTurns(r *http.Request, limit int) []shadowTurn {
 
 func (s *Server) shadow(w http.ResponseWriter, r *http.Request) {
 	queued, running, done, variants := s.Agent.ShadowStatus()
-	s.render(w, "shadow", map[string]any{
+	s.Render(w, "shadow", map[string]any{
 		"Stats": s.Store.ShadowStats(), "Turns": s.shadowTurns(r, 240),
 		"Queued": queued, "Running": running, "Done": done, "Variants": strings.Join(variants, ", "),
 		"Source": r.FormValue("source"), "Variant": r.FormValue("variant"), "Unjudged": r.FormValue("unjudged") != "",

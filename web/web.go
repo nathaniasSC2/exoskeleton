@@ -11,10 +11,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"math/rand"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,13 +41,27 @@ type Server struct {
 	Senders map[string]channel.Sender
 	Started time.Time
 
+	// Additions from a deployment built on exo (all optional).
+	Nav   []Link                   // more header links
+	Pages fs.FS                    // more templates (*.html at its root), parsed with exo's so they can use head and foot
+	Funcs template.FuncMap         // template functions those pages need
+	Mount func(mux *http.ServeMux) // more routes
+
 	tpl       *template.Template
 	replaying atomic.Bool
 }
 
+// Link is a header link. Pages lists the page names that highlight it;
+// First puts it right after Live instead of at the end.
+type Link struct {
+	Href, Label, Title string
+	Pages              []string
+	First              bool
+}
+
 func (s *Server) Handler() http.Handler {
 	loc := s.Agent.Cfg.Loc
-	s.tpl = template.Must(template.New("").Funcs(template.FuncMap{
+	funcs := template.FuncMap{
 		"ts": func(t int64) string {
 			if t == 0 {
 				return "—"
@@ -88,7 +104,15 @@ func (s *Server) Handler() http.Handler {
 			}
 			return time.Unix(t, 0).In(loc).Format("Mon 3:04 PM")
 		},
-	}).ParseFS(assets, "templates/*.html"))
+		"has": func(xs []string, x string) bool { return slices.Contains(xs, x) },
+	}
+	for k, f := range s.Funcs {
+		funcs[k] = f
+	}
+	s.tpl = template.Must(template.New("").Funcs(funcs).ParseFS(assets, "templates/*.html"))
+	if s.Pages != nil {
+		s.tpl = template.Must(s.tpl.ParseFS(s.Pages, "*.html"))
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.FileServerFS(assets))
@@ -118,6 +142,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /shadow/{id}/verdict", s.shadowVerdict)
 	mux.HandleFunc("GET /api/shadow", s.apiShadow)
 	mux.HandleFunc("POST /mode", s.modePost)
+	if s.Mount != nil {
+		s.Mount(mux)
+	}
 	return logRequests(mux)
 }
 
@@ -133,9 +160,13 @@ func logRequests(h http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) {
+// Render executes a page template with the header's data (Status, Page, Nav).
+func (s *Server) Render(w http.ResponseWriter, name string, data map[string]any) {
 	data["Status"] = s.status()
-	data["Page"] = name
+	data["Nav"] = s.Nav
+	if _, ok := data["Page"]; !ok {
+		data["Page"] = name
+	}
 	var buf bytes.Buffer // render fully first so a template bug is a visible 500, not a blank page
 	if err := s.tpl.ExecuteTemplate(&buf, name+".html", data); err != nil {
 		slog.Error("template", "page", name, "err", err)
@@ -172,6 +203,9 @@ type ChanStatus struct {
 	Name string
 	OK   bool
 }
+
+// StatusNow is the header's data: brain, channels, usage, today's numbers.
+func (s *Server) StatusNow() Status { return s.status() }
 
 func (s *Server) status() Status {
 	cfg := s.Agent.Cfg
@@ -242,7 +276,7 @@ func (s *Server) live(w http.ResponseWriter, r *http.Request) {
 	if len(turns) == 50 {
 		older = turns[len(turns)-1].ID
 	}
-	s.render(w, "live", map[string]any{"Turns": turns, "F": f, "Older": older, "Q": r.URL.RawQuery, "People": s.Agent.Cfg.People})
+	s.Render(w, "live", map[string]any{"Turns": turns, "F": f, "Older": older, "Q": r.URL.RawQuery, "People": s.Agent.Cfg.People})
 }
 
 // apiTurns returns rows newer than ?after= as rendered HTML fragments.
@@ -272,11 +306,11 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.private(t.Person) {
-		s.render(w, "turn", map[string]any{"T": s.redact([]*store.Turn{t})[0], "Private": true})
+		s.Render(w, "turn", map[string]any{"T": s.redact([]*store.Turn{t})[0], "Private": true})
 		return
 	}
 	trace, _ := s.Store.TraceRows(t.ID)
-	s.render(w, "turn", map[string]any{"T": t, "Trace": trace, "System": s.Store.System(t.PromptHash)})
+	s.Render(w, "turn", map[string]any{"T": t, "Trace": trace, "System": s.Store.System(t.PromptHash)})
 }
 
 func (s *Server) feedback(w http.ResponseWriter, r *http.Request) {
@@ -312,7 +346,7 @@ func (s *Server) jobRows(where string, args ...any) []JobRow {
 }
 
 func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "jobs", map[string]any{"Jobs": s.jobRows("")})
+	s.Render(w, "jobs", map[string]any{"Jobs": s.jobRows("")})
 }
 
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +355,7 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.render(w, "job", map[string]any{"J": js[0], "Log": jobs.Tail(js[0].LogPath, 60)})
+	s.Render(w, "job", map[string]any{"J": js[0], "Log": jobs.Tail(js[0].LogPath, 60)})
 }
 
 func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
@@ -360,7 +394,7 @@ func (s *Server) schedule(w http.ResponseWriter, r *http.Request) {
 		}
 		rows.Close()
 	}
-	s.render(w, "schedule", map[string]any{"Entries": es, "Runs": runs})
+	s.Render(w, "schedule", map[string]any{"Entries": es, "Runs": runs})
 }
 
 func (s *Server) runNow(w http.ResponseWriter, r *http.Request) {
@@ -395,10 +429,10 @@ func (s *Server) memory(w http.ResponseWriter, r *http.Request) {
 	p := s.person(r)
 	facts, _ := s.Store.Facts(p, false)
 	if s.private(p) {
-		s.render(w, "memory", map[string]any{"Person": p, "People": s.Agent.Cfg.People, "PrivateCount": len(facts)})
+		s.Render(w, "memory", map[string]any{"Person": p, "People": s.Agent.Cfg.People, "PrivateCount": len(facts)})
 		return
 	}
-	s.render(w, "memory", map[string]any{"Person": p, "People": s.Agent.Cfg.People, "Facts": facts})
+	s.Render(w, "memory", map[string]any{"Person": p, "People": s.Agent.Cfg.People, "Facts": facts})
 }
 
 func (s *Server) memoryPost(w http.ResponseWriter, r *http.Request) {
@@ -432,7 +466,7 @@ func (s *Server) prompts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	versions, _ := s.Store.PromptVersions(name, 30)
-	s.render(w, "prompts", map[string]any{"Names": names, "Name": name, "Content": content, "Versions": versions,
+	s.Render(w, "prompts", map[string]any{"Names": names, "Name": name, "Content": content, "Versions": versions,
 		"Tokens": len(content) / 4, "Saved": r.FormValue("saved") == "1"})
 }
 
@@ -456,12 +490,12 @@ func (s *Server) console(w http.ResponseWriter, r *http.Request) {
 			mine = append(mine, t)
 		}
 	}
-	s.render(w, "console", map[string]any{"People": s.Agent.Cfg.People, "Turns": mine})
+	s.Render(w, "console", map[string]any{"People": s.Agent.Cfg.People, "Turns": mine})
 }
 
 func (s *Server) consolePost(w http.ResponseWriter, r *http.Request) {
 	r.ParseMultipartForm(25 << 20)
-	text, images := s.upload(r, "console")
+	text, images := s.Upload(r, "console")
 	if text != "" || len(images) > 0 {
 		s.Agent.Console(s.person(r), text, images...)
 	}
@@ -520,7 +554,7 @@ func (s *Server) replay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_, haveSet := os.Stat(s.Agent.Cfg.Path("replay", "set.jsonl"))
-	s.render(w, "replay", map[string]any{"Runs": runs, "Run": run, "Results": res, "Busy": s.replaying.Load(), "HaveSet": haveSet == nil})
+	s.Render(w, "replay", map[string]any{"Runs": runs, "Run": run, "Results": res, "Busy": s.replaying.Load(), "HaveSet": haveSet == nil})
 }
 
 type sample struct {

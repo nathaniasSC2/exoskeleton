@@ -12,9 +12,10 @@ import (
 	"github.com/nathaniasSC2/exoskeleton/channel"
 )
 
-// upload reads the console form: its text, plus an optional image (normalized
-// to JPEG) or audio file (transcribed, like a voice memo from a channel).
-func (s *Server) upload(r *http.Request, prefix string) (string, []string) {
+// Upload reads a message form: its "text", plus an optional "image" file
+// (normalized to JPEG) or audio file (transcribed, like a voice memo from a
+// channel). Saved files are named <prefix>-<time> in the inbox.
+func (s *Server) Upload(r *http.Request, prefix string) (string, []string) {
 	text := strings.TrimSpace(r.FormValue("text"))
 	var images []string
 	f, hdr, err := r.FormFile("image")

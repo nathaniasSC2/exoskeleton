@@ -4,13 +4,16 @@
 <body><header>
 <nav><b>{{.Status.Name}}</b>
 <a href="/" {{if eq .Page "live"}}class="on"{{end}}>Live</a>
-<a href="/jobs" {{if eq .Page "jobs"}}class="on"{{end}}>Jobs</a>
+{{range .Nav}}{{if .First}}<a href="{{.Href}}" {{if has .Pages $.Page}}class="on"{{end}} title="{{.Title}}">{{.Label}}</a>
+{{end}}{{end}}<a href="/jobs" {{if eq .Page "jobs"}}class="on"{{end}}>Jobs</a>
 <a href="/schedule" {{if eq .Page "schedule"}}class="on"{{end}}>Schedule</a>
 <a href="/memory" {{if eq .Page "memory"}}class="on"{{end}}>Memory</a>
 <a href="/prompts" {{if eq .Page "prompts"}}class="on"{{end}}>Prompts</a>
 <a href="/replay" {{if eq .Page "replay"}}class="on"{{end}}>Replay</a>
 <a href="/shadow" {{if eq .Page "shadow"}}class="on"{{end}}>Shadow</a>
-<a href="/console" {{if eq .Page "console"}}class="on"{{end}}>Console</a></nav>
+<a href="/console" {{if eq .Page "console"}}class="on"{{end}}>Console</a>
+{{range .Nav}}{{if not .First}}<a href="{{.Href}}" {{if has .Pages $.Page}}class="on"{{end}} title="{{.Title}}">{{.Label}}</a>
+{{end}}{{end}}</nav>
 {{with .Status}}<div class="bar">
 <span class="pill {{.Mode}}">brain: {{.Mode}}</span>
 {{if .Down}}<span class="pill bad" title="{{.Down}}">claude down: {{clip .Down 40}}</span>{{end}}
