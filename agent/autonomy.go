@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/engine"
-	"github.com/nathaniasSC2/exoskeleton/internal/sched"
-	"github.com/nathaniasSC2/exoskeleton/internal/store"
-	"github.com/nathaniasSC2/exoskeleton/internal/tools"
+	"github.com/nathaniasSC2/exoskeleton/engine"
+	"github.com/nathaniasSC2/exoskeleton/sched"
+	"github.com/nathaniasSC2/exoskeleton/store"
+	"github.com/nathaniasSC2/exoskeleton/tools"
 )
 
 // Everything here is the assistant acting without being messaged: routines

@@ -18,9 +18,9 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/config"
-	"github.com/nathaniasSC2/exoskeleton/internal/proc"
-	"github.com/nathaniasSC2/exoskeleton/internal/store"
+	"github.com/nathaniasSC2/exoskeleton/config"
+	"github.com/nathaniasSC2/exoskeleton/proc"
+	"github.com/nathaniasSC2/exoskeleton/store"
 )
 
 type Entry struct {

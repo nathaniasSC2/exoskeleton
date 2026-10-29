@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/channel"
+	"github.com/nathaniasSC2/exoskeleton/channel"
 )
 
 // upload reads the console form: its text, plus an optional image (normalized

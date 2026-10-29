@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/tools"
+	"github.com/nathaniasSC2/exoskeleton/tools"
 )
 
 // Local runs the turn on the local MoE (llama.cpp's OpenAI-compatible server)

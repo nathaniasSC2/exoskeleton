@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/agent"
-	"github.com/nathaniasSC2/exoskeleton/internal/config"
-	"github.com/nathaniasSC2/exoskeleton/internal/store"
-	"github.com/nathaniasSC2/exoskeleton/internal/tools"
+	"github.com/nathaniasSC2/exoskeleton/agent"
+	"github.com/nathaniasSC2/exoskeleton/config"
+	"github.com/nathaniasSC2/exoskeleton/store"
+	"github.com/nathaniasSC2/exoskeleton/tools"
 )
 
 // budget prints what exo itself puts into every model call: the system

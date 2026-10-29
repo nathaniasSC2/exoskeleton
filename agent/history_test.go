@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/config"
-	"github.com/nathaniasSC2/exoskeleton/internal/engine"
-	"github.com/nathaniasSC2/exoskeleton/internal/store"
+	"github.com/nathaniasSC2/exoskeleton/config"
+	"github.com/nathaniasSC2/exoskeleton/engine"
+	"github.com/nathaniasSC2/exoskeleton/store"
 )
 
 func lines(h []engine.Msg) []string {

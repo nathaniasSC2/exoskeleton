@@ -49,7 +49,7 @@ flowchart LR
   verdict buttons. Past turns can be replayed exactly as Claude saw them.
 - **Guards for small models.** Unbacked "done" claims, broken tool-call JSON,
   thinking that eats the whole budget and tool calls leaked as text are each
-  caught and retried (`internal/engine/local.go`, revisions in `shadow.go`).
+  caught and retried (`engine/local.go`, revisions in `shadow.go`).
 - **Failover.** A rate limit or auth failure holds messages and asks the admin
   "go local?". It probes Claude until it's back, then switches back on its own.
 - **Background jobs** run as full Claude Code sessions in transient systemd

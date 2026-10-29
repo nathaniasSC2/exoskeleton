@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/config"
-	"github.com/nathaniasSC2/exoskeleton/internal/store"
+	"github.com/nathaniasSC2/exoskeleton/config"
+	"github.com/nathaniasSC2/exoskeleton/store"
 )
 
 func testReg(t *testing.T) (*Registry, *config.Person, *config.Person) {

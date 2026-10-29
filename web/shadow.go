@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/engine"
-	"github.com/nathaniasSC2/exoskeleton/internal/store"
+	"github.com/nathaniasSC2/exoskeleton/engine"
+	"github.com/nathaniasSC2/exoskeleton/store"
 )
 
 // The Shadow page puts Claude's real reply next to what the local model said

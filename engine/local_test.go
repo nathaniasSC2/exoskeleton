@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/tools"
+	"github.com/nathaniasSC2/exoskeleton/tools"
 )
 
 func TestClaimRe(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/config"
-	"github.com/nathaniasSC2/exoskeleton/internal/tools"
+	"github.com/nathaniasSC2/exoskeleton/config"
+	"github.com/nathaniasSC2/exoskeleton/tools"
 )
 
 // A slow turn keeps the person posted, and they can stop it. Past Cfg.CheckIn

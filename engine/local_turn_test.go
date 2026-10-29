@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/config"
-	"github.com/nathaniasSC2/exoskeleton/internal/store"
-	"github.com/nathaniasSC2/exoskeleton/internal/tools"
+	"github.com/nathaniasSC2/exoskeleton/config"
+	"github.com/nathaniasSC2/exoskeleton/store"
+	"github.com/nathaniasSC2/exoskeleton/tools"
 )
 
 // fakeLlama answers /chat/completions with scripted replies and keeps the requests.

@@ -20,16 +20,16 @@ import (
 	"time"
 	_ "time/tzdata"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/agent"
-	"github.com/nathaniasSC2/exoskeleton/internal/channel"
-	"github.com/nathaniasSC2/exoskeleton/internal/config"
-	"github.com/nathaniasSC2/exoskeleton/internal/engine"
-	"github.com/nathaniasSC2/exoskeleton/internal/jobs"
-	"github.com/nathaniasSC2/exoskeleton/internal/mcp"
-	"github.com/nathaniasSC2/exoskeleton/internal/sched"
-	"github.com/nathaniasSC2/exoskeleton/internal/store"
-	"github.com/nathaniasSC2/exoskeleton/internal/tools"
-	"github.com/nathaniasSC2/exoskeleton/internal/web"
+	"github.com/nathaniasSC2/exoskeleton/agent"
+	"github.com/nathaniasSC2/exoskeleton/channel"
+	"github.com/nathaniasSC2/exoskeleton/config"
+	"github.com/nathaniasSC2/exoskeleton/engine"
+	"github.com/nathaniasSC2/exoskeleton/jobs"
+	"github.com/nathaniasSC2/exoskeleton/mcp"
+	"github.com/nathaniasSC2/exoskeleton/sched"
+	"github.com/nathaniasSC2/exoskeleton/store"
+	"github.com/nathaniasSC2/exoskeleton/tools"
+	"github.com/nathaniasSC2/exoskeleton/web"
 )
 
 func main() {

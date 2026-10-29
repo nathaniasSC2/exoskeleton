@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/tools"
+	"github.com/nathaniasSC2/exoskeleton/tools"
 )
 
 type rpcReq struct {

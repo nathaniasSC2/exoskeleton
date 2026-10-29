@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/proc"
+	"github.com/nathaniasSC2/exoskeleton/proc"
 )
 
 // Claude drives the real Claude Code CLI headless, logged in with the user's

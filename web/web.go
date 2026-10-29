@@ -21,12 +21,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nathaniasSC2/exoskeleton/internal/agent"
-	"github.com/nathaniasSC2/exoskeleton/internal/channel"
-	"github.com/nathaniasSC2/exoskeleton/internal/engine"
-	"github.com/nathaniasSC2/exoskeleton/internal/jobs"
-	"github.com/nathaniasSC2/exoskeleton/internal/sched"
-	"github.com/nathaniasSC2/exoskeleton/internal/store"
+	"github.com/nathaniasSC2/exoskeleton/agent"
+	"github.com/nathaniasSC2/exoskeleton/channel"
+	"github.com/nathaniasSC2/exoskeleton/engine"
+	"github.com/nathaniasSC2/exoskeleton/jobs"
+	"github.com/nathaniasSC2/exoskeleton/sched"
+	"github.com/nathaniasSC2/exoskeleton/store"
 )
 
 //go:embed templates/*.html static/*
