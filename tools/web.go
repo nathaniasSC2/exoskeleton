@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -29,7 +30,15 @@ var (
 )
 
 func (r *Registry) webSearch(ctx context.Context, _ *Ctx, a Args) Result {
-	// DuckDuckGo's HTML endpoint. Claude Code turns use its built-in WebSearch instead.
+	if r.Search != nil {
+		if res, err := r.Search(ctx, a.S("query")); err == nil && res != "" {
+			return Result{Text: res}
+		} else if err != nil {
+			slog.Warn("web_search", "err", err)
+		}
+	}
+	// DuckDuckGo's HTML endpoint (often a challenge page for bots). Claude Code
+	// turns use its built-in WebSearch instead.
 	form := url.Values{"q": {a.S("query")}}
 	req, _ := http.NewRequestWithContext(ctx, "POST", "https://html.duckduckgo.com/html/", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -61,18 +70,41 @@ func (r *Registry) webSearch(ctx context.Context, _ *Ctx, a Args) Result {
 
 func (r *Registry) fetch(ctx context.Context, c *Ctx, a Args) Result {
 	u := a.S("url")
-	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
-	req.Header.Set("User-Agent", ua)
-	if resp, err := httpc.Do(req); err == nil {
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		if resp.StatusCode == 200 {
-			if t := pageText(string(body)); len(t) > 200 {
-				return Result{Text: clip(t, 7000)}
-			}
+	if t, err := FetchPage(ctx, u); err == nil {
+		return Result{Text: clip(t, 7000)}
+	}
+	if r.Fetch != nil { // sites that block plain HTTP
+		t, err := r.Fetch(ctx, c, u)
+		if err != nil {
+			return Result{Text: "fetch failed: " + err.Error(), IsError: true}
 		}
+		return Result{Text: clip(t, 7000)}
 	}
 	return Result{Text: "fetch failed: no readable page at " + u, IsError: true}
+}
+
+// FetchPage reads a page over plain HTTP as text. It fails on errors, non-200
+// answers and pages with almost no text (bot walls, JS-only sites).
+func FetchPage(ctx context.Context, u string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", ua)
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("%s answered %d", u, resp.StatusCode)
+	}
+	t := pageText(string(body))
+	if len(t) <= 200 {
+		return "", fmt.Errorf("no readable text at %s", u)
+	}
+	return t, nil
 }
 
 func pageText(h string) string {

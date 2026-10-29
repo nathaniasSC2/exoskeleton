@@ -65,7 +65,7 @@ func (d *Discord) onCreate(_ *discordgo.Session, m *discordgo.MessageCreate) {
 			if err != nil {
 				slog.Warn("voice message", "err", err)
 			}
-			in.Text = strings.TrimSpace(in.Text + "\n" + voiceText(t, err))
+			in.Text = strings.TrimSpace(in.Text + "\n" + VoiceText(t, err))
 			continue
 		}
 		if !strings.HasPrefix(a.ContentType, "image/") {

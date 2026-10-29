@@ -164,8 +164,8 @@ func IsAudio(mime, name string) bool {
 		strings.HasSuffix(n, ".ogg") || strings.HasSuffix(n, ".opus") || strings.HasSuffix(n, ".mp3") || strings.HasSuffix(n, ".amr")
 }
 
-// voiceText is how a memo shows up in the conversation.
-func voiceText(transcript string, err error) string {
+// VoiceText is how a memo shows up in the conversation.
+func VoiceText(transcript string, err error) string {
 	if err != nil {
 		return "[sent a voice memo, but it couldn't be transcribed]"
 	}
