@@ -41,7 +41,7 @@ type App struct {
 	Agent *agent.Agent
 	Reg   *tools.Registry
 	Jobs  *jobs.Runner
-	Sched *sched.Scheduler // built by Run
+	Sched *sched.Scheduler // started by Run
 	Web   *web.Server      // routes, pages and nav can be added before Run
 	MCP   *http.ServeMux   // the MCP listener's routes (/mcp/ is taken)
 
@@ -95,8 +95,14 @@ func New(cfg *config.Config) (*App, error) {
 	reg.Routines = a
 	reg.SetInterests = a.SetInterests
 	reg.SetLoops = a.SetLoops
-	ap := &App{Cfg: cfg, Store: st, Agent: a, Reg: reg, Jobs: runner, MCP: http.NewServeMux(),
-		Web: &web.Server{Agent: a, Store: st, Senders: a.Senders}}
+	ap := &App{Cfg: cfg, Store: st, Agent: a, Reg: reg, Jobs: runner, MCP: http.NewServeMux()}
+	ap.Sched = &sched.Scheduler{Cfg: cfg, Store: st, Deliver: a.DeliverTarget, Routine: a.RunRoutine,
+		Builtin: map[string]func(context.Context) (string, error){
+			"maintenance": ap.maintenance,
+			"heartbeat":   a.Heartbeat,
+		}}
+	a.Sched = ap.Sched
+	ap.Web = &web.Server{Agent: a, Store: st, Sched: ap.Sched, Senders: a.Senders}
 	ap.MCP.Handle("/mcp/", &mcp.Server{Name: cfg.Slug(), Token: cfg.MCPToken, Registry: reg, Lookup: a.Lookup})
 	return ap, nil
 }
@@ -191,11 +197,7 @@ func (ap *App) Run(ctx context.Context) error {
 			break
 		}
 	}
-	sc := &sched.Scheduler{Cfg: cfg, Store: ap.Store, Deliver: a.DeliverTarget, Routine: a.RunRoutine,
-		Builtin: map[string]func(context.Context) (string, error){
-			"maintenance": ap.maintenance,
-			"heartbeat":   a.Heartbeat,
-		}}
+	sc := ap.Sched
 	heartbeat := cfg.Heartbeat
 	if heartbeat == "" {
 		heartbeat = "0 0 31 2 *" // never fires; the entry still shows on the dashboard for Run now
@@ -208,7 +210,6 @@ func (ap *App) Run(ctx context.Context) error {
 		sc.Builtin[b.entry.Name] = b.run
 		entries = append(entries, b.entry)
 	}
-	ap.Sched, a.Sched, ap.Web.Sched = sc, sc, sc
 	if err := sc.Start(entries); err != nil {
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
 	"math/rand"
@@ -158,6 +159,11 @@ func logRequests(h http.Handler) http.Handler {
 		}()
 		h.ServeHTTP(w, r)
 	})
+}
+
+// Execute runs one template (a page or a fragment) without the header data.
+func (s *Server) Execute(w io.Writer, name string, data any) error {
+	return s.tpl.ExecuteTemplate(w, name, data)
 }
 
 // Render executes a page template with the header's data (Status, Page, Nav).

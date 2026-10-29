@@ -194,7 +194,11 @@ type Registry struct {
 	Routines     RoutineManager
 	SetInterests func(person, text string) error
 	SetLoops     func(person, text string)
-	tools        []*Tool
+	// Optional: a better search for the local engine's web_search (a real
+	// browser, say), and a reader for pages plain HTTP can't get (bot walls).
+	Search func(ctx context.Context, query string) (string, error)
+	Fetch  func(ctx context.Context, c *Ctx, url string) (string, error)
+	tools  []*Tool
 }
 
 type RoutineManager interface {
@@ -313,17 +317,18 @@ func New(cfg *config.Config, st *store.Store, jobs Jobs, notes NotesClient) *Reg
 				Params:   map[string]any{"note": str("Exact permalink"), "text": str("What changed, one or two sentences")},
 				Required: []string{"note", "text"}, Run: r.notesAppend})
 	}
-	r.tools = append(r.tools, r.specialistTools()...)
+	r.tools = append(r.tools, r.KitTools()...)
 	r.applyMeta()
 	return r
 }
 
-// Add registers more tools. One with the name of an existing tool replaces it.
+// Add registers more tools. One with the name and Set of an existing tool
+// replaces it (an agent's set may reuse a chat tool's name).
 func (r *Registry) Add(ts ...*Tool) {
 	for _, t := range ts {
 		replaced := false
 		for i, old := range r.tools {
-			if old.Name == t.Name {
+			if old.Name == t.Name && old.Set == t.Set {
 				r.tools[i], replaced = t, true
 				break
 			}
@@ -474,7 +479,7 @@ func (r *Registry) Call(ctx context.Context, c *Ctx, name string, args Args) Res
 	slog.Info("tool", "turn", c.TurnID, "tool", name, "ms", time.Since(start).Milliseconds(), "err", res.IsError)
 	if (untrusted[name] || t.Untrusted) && !res.IsError {
 		c.Taint(name)
-		res.Text = fence(name, res.Text)
+		res.Text = Fence(name, res.Text)
 	}
 	return res
 }

@@ -45,8 +45,9 @@ type Runner struct {
 	// MCP adjusts the MCP servers a job gets (add one, rename one). Optional.
 	MCP func(id int64, kit string, servers map[string]any)
 
-	kitsMu sync.Mutex
-	kits   map[string]tools.Kit
+	kitsMu  sync.Mutex
+	kits    map[string]tools.Kit // kits.json
+	builtin map[string]tools.Kit // AddKit
 
 	sem       chan struct{}
 	mu        sync.Mutex
@@ -128,11 +129,27 @@ func loadKits(path string) map[string]tools.Kit {
 	return kits
 }
 
-// Kits lists the configured specialist kits, by name.
+// AddKit adds a built-in kit; one of the same name in kits.json wins. Call
+// Registry.KitTools afterwards to offer it.
+func (r *Runner) AddKit(k tools.Kit) {
+	r.kitsMu.Lock()
+	defer r.kitsMu.Unlock()
+	if r.builtin == nil {
+		r.builtin = map[string]tools.Kit{}
+	}
+	r.builtin[k.Name] = k
+}
+
+// Kits lists the specialist kits, by name.
 func (r *Runner) Kits() []tools.Kit {
 	r.kitsMu.Lock()
 	defer r.kitsMu.Unlock()
 	var out []tools.Kit
+	for name, k := range r.builtin {
+		if _, ok := r.kits[name]; !ok {
+			out = append(out, k)
+		}
+	}
 	for _, k := range r.kits {
 		out = append(out, k)
 	}
@@ -147,7 +164,10 @@ func (r *Runner) kit(name string) (tools.Kit, bool) {
 	if fresh := loadKits(r.Cfg.Path("kits.json")); len(fresh) > 0 {
 		r.kits = fresh
 	}
-	k, ok := r.kits[name]
+	if k, ok := r.kits[name]; ok {
+		return k, true
+	}
+	k, ok := r.builtin[name]
 	return k, ok
 }
 
