@@ -35,26 +35,33 @@ type Ctx struct {
 	Kit           string          // jobs: which kit (general, or one from kits.json)
 
 	mu      sync.Mutex
-	tainted string   // what untrusted content this turn has read ("" = none)
-	used    []string // tools actually run (for the dashboard)
-	stubs   int      // side effects stubbed in a replay (fake ids)
+	valMu   sync.Mutex // serializes Value's init
+	tainted string     // what untrusted content this turn has read ("" = none)
+	used    []string   // tools actually run (for the dashboard)
+	stubs   int        // side effects stubbed in a replay (fake ids)
 	values  map[string]any
 	done    []func()
 }
 
 // Value returns per-context state a tool keeps between calls (a browser tab,
-// a session), creating it with init on first use.
+// a session), creating it with init on first use. init runs without the
+// context's lock held, so it may call OnDone.
 func (c *Ctx) Value(key string, init func() any) any {
+	c.valMu.Lock() // one init per context at a time
+	defer c.valMu.Unlock()
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if v, ok := c.values[key]; ok {
+	v, ok := c.values[key]
+	c.mu.Unlock()
+	if ok {
 		return v
 	}
+	v = init()
+	c.mu.Lock()
 	if c.values == nil {
 		c.values = map[string]any{}
 	}
-	v := init()
 	c.values[key] = v
+	c.mu.Unlock()
 	return v
 }
 

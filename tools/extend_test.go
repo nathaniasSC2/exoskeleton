@@ -73,12 +73,15 @@ func TestCtxValueAndClose(t *testing.T) {
 	if c.Value("tab", tab) != 1 || c.Value("tab", tab) != 1 {
 		t.Fatal("Value should create once")
 	}
+	// init may register its own cleanup (a tab that closes with the turn).
+	closed := false
+	c.Value("tab2", func() any { c.OnDone(func() { closed = true }); return 1 })
 	var order []string
 	c.OnDone(func() { order = append(order, "first") })
 	c.OnDone(func() { order = append(order, "second") })
 	c.Close()
 	c.Close()
-	if strings.Join(order, ",") != "second,first" {
+	if strings.Join(order, ",") != "second,first" || !closed {
 		t.Fatalf("cleanups ran %v", order)
 	}
 }
