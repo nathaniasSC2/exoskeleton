@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +38,38 @@ type Ctx struct {
 	tainted string   // what untrusted content this turn has read ("" = none)
 	used    []string // tools actually run (for the dashboard)
 	stubs   int      // side effects stubbed in a replay (fake ids)
+	values  map[string]any
+	done    []func()
+}
+
+// Value returns per-context state a tool keeps between calls (a browser tab,
+// a session), creating it with init on first use.
+func (c *Ctx) Value(key string, init func() any) any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if v, ok := c.values[key]; ok {
+		return v
+	}
+	if c.values == nil {
+		c.values = map[string]any{}
+	}
+	v := init()
+	c.values[key] = v
+	return v
+}
+
+// OnDone registers cleanup for when the turn or job ends (Close).
+func (c *Ctx) OnDone(f func()) { c.mu.Lock(); c.done = append(c.done, f); c.mu.Unlock() }
+
+// Close runs the cleanups registered with OnDone, once.
+func (c *Ctx) Close() {
+	c.mu.Lock()
+	fs := c.done
+	c.done = nil
+	c.mu.Unlock()
+	for i := len(fs) - 1; i >= 0; i-- {
+		fs[i]()
+	}
 }
 
 // Taint marks the turn as having read untrusted content (web pages, search
@@ -70,16 +103,22 @@ type Tool struct {
 	Name, Desc string
 	Params     map[string]any // JSON-schema properties
 	Required   []string
-	Admin      bool   // admins only
-	Where      string // "both" | "claude" | "local" (chat tools only)
-	Set        string // "" = the chat toolset; "heartbeat" = heartbeat-only
+	Admin      bool     // admins only
+	Where      string   // "both" | "claude" | "local" (chat tools only)
+	Set        string   // "" = the chat toolset; "heartbeat" = heartbeat-only; any other name = an agent's own direct set
+	Kits       []string // background jobs with one of these kits get it too ("general" = plain start_job jobs)
 	SideEffect bool
+	Untrusted  bool                        // returns content written by strangers: fenced, and it taints the turn
 	Branch     string                      // toolbox branch: memory, time, web, notes, server, create, files, self
 	Short      string                      // one-line purpose for the toolbox index
 	Gated      bool                        // refuses in a turn that has read untrusted content
 	Timeout    time.Duration               // default 2 min
 	Check      func(c *Ctx, a Args) string // optional argument check ("" = fine); runs before Run and before replay stubs
 	Run        func(ctx context.Context, c *Ctx, a Args) Result
+	// Replays skip side effects. ReplayRuns lets the read-only uses of a side-effect
+	// tool run anyway (a list action); Stub is the reply the real tool would give.
+	ReplayRuns func(a Args) bool
+	Stub       func(c *Ctx, a Args) string
 }
 
 func (t *Tool) Schema() map[string]any {
@@ -279,6 +318,33 @@ func New(cfg *config.Config, st *store.Store, jobs Jobs, notes NotesClient) *Reg
 	return r
 }
 
+// Add registers more tools. One with the name of an existing tool replaces it.
+func (r *Registry) Add(ts ...*Tool) {
+	for _, t := range ts {
+		replaced := false
+		for i, old := range r.tools {
+			if old.Name == t.Name {
+				r.tools[i], replaced = t, true
+				break
+			}
+		}
+		if !replaced {
+			r.tools = append(r.tools, t)
+		}
+	}
+	r.applyMeta()
+}
+
+// Tool returns a registered tool by name, or nil.
+func (r *Registry) Tool(name string) *Tool {
+	for _, t := range r.tools {
+		if t.Name == name {
+			return t
+		}
+	}
+	return nil
+}
+
 // For lists the chat tools for a person on an engine.
 func (r *Registry) For(p *config.Person, engine string) []*Tool {
 	var out []*Tool
@@ -309,9 +375,19 @@ func (r *Registry) Toolset(c *Ctx) []*Tool {
 				all = append(all, t)
 			}
 		}
-	case "job":
+	case "job": // send_file, plus what the job's kit needs: less to misuse, less to inject into
+		kit := c.Kit
+		if kit == "" {
+			kit = "general"
+		}
 		for _, t := range r.tools {
-			if t.Name == "send_file" {
+			if t.Name == "send_file" || slices.Contains(t.Kits, kit) {
+				all = append(all, t)
+			}
+		}
+	default: // an agent's own set (e.g. a browsing sub-agent)
+		for _, t := range r.tools {
+			if t.Set == c.Set {
 				all = append(all, t)
 			}
 		}
@@ -371,8 +447,11 @@ func (r *Registry) Call(ctx context.Context, c *Ctx, name string, args Args) Res
 	// Replays skip side effects but answer like the real tool (stub.go). Shadow
 	// runs (replay on the local engine) let shell through: it runs read-only
 	// commands and refuses the rest exactly as live local turns do.
-	if c.Replay && t.SideEffect && !replayRuns(name, args) && !(name == "shell" && c.Engine == "local") {
+	if c.Replay && t.SideEffect && !replayRuns(t, args) && !(name == "shell" && c.Engine == "local") {
 		c.markUsed(name)
+		if t.Stub != nil {
+			return Result{Text: t.Stub(c, args)}
+		}
 		return Result{Text: c.replayStub(name, args)}
 	}
 	c.markUsed(name)
@@ -393,7 +472,7 @@ func (r *Registry) Call(ctx context.Context, c *Ctx, name string, args Args) Res
 	}()
 	// The engines trace calls and results; this just logs timing.
 	slog.Info("tool", "turn", c.TurnID, "tool", name, "ms", time.Since(start).Milliseconds(), "err", res.IsError)
-	if untrusted[name] && !res.IsError {
+	if (untrusted[name] || t.Untrusted) && !res.IsError {
 		c.Taint(name)
 		res.Text = fence(name, res.Text)
 	}

@@ -9,8 +9,11 @@ import "fmt"
 // turn would have been. Read-only actions of mixed tools (reminder list) really
 // run; see replayRuns.
 
-func replayRuns(name string, a Args) bool {
-	switch name {
+func replayRuns(t *Tool, a Args) bool {
+	if t.ReplayRuns != nil {
+		return t.ReplayRuns(a)
+	}
+	switch t.Name {
 	case "shell":
 		return ReadOnlyCommand(a.S("command"))
 	case "reminder", "routine":

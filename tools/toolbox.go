@@ -25,6 +25,23 @@ var branchNames = map[string]string{
 	"self": "your own notes",
 }
 
+// AddBranch adds a toolbox index section before another one ("" = before
+// "self", the last), or renames an existing section.
+func AddBranch(key, label, before string) {
+	branchNames[key] = label
+	if slices.Contains(branchOrder, key) {
+		return
+	}
+	if before == "" {
+		before = "self"
+	}
+	i := slices.Index(branchOrder, before)
+	if i < 0 {
+		i = len(branchOrder)
+	}
+	branchOrder = slices.Insert(branchOrder, i, key)
+}
+
 // tool metadata kept here so tools.go stays readable: branch, index line,
 // whether reading untrusted content blocks it.
 var meta = map[string]struct {
