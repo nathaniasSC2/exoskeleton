@@ -1,0 +1,14 @@
+{{template "head" .}}<h1>Replay</h1>
+<p class="dim">Answers real past messages again on the current brain ({{.Status.Mode}}) with no history and no side effects, next to what was said then. Each sample is one Claude call.</p>
+<form method="post" action="/replay" class="inline">
+<select name="source"><option value="set" {{if not .HaveSet}}disabled="disabled"{{end}}>replay set{{if not .HaveSet}} (add replay/set.jsonl){{end}}</option><option value="feedback">👎 turns</option></select>
+<input name="n" type="number" value="10" min="1" max="60" class="num"> samples
+<button {{if .Busy}}disabled="disabled"{{end}}>{{if .Busy}}Running…{{else}}Start run{{end}}</button></form>
+<table><thead><tr><th>run</th><th>n</th><th>avg latency</th><th>avg ctx</th></tr></thead><tbody>
+{{range .Runs}}<tr><td><a href="/replay?run={{.Run}}">{{.Run}}</a></td><td>{{.N}}</td><td>{{secs .Avg}}</td><td>{{k .AvgIn}}</td></tr>{{end}}</tbody></table>
+{{if .Run}}<h2>{{.Run}}</h2>
+{{range .Results}}<div class="cmp"><div class="q"><b>{{.Idx}}.</b> {{.Input}}</div>
+<div class="grid2"><div><small>then (baseline)</small><pre class="msg">{{or .Baseline "—"}}</pre></div>
+<div><small>now · {{.Engine}} · {{secs .LatencyMS}} · {{k .InTok}} tok{{if .Tools}} · ⚙ {{.Tools}}{{end}}</small><pre class="msg">{{if .Error}}{{.Error}}{{else}}{{.Reply}}{{end}}</pre></div></div></div>
+{{end}}{{if .Busy}}<meta http-equiv="refresh" content="8">{{end}}{{end}}
+{{template "foot" .}}

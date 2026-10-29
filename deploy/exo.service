@@ -1,0 +1,26 @@
+[Unit]
+# exo: channels in and out, Claude Code headless as the brain, a local model
+# as the fallback, background jobs, the schedule and the dashboard.
+# Settings and secrets: /etc/exo/exo.env (see examples/exo.env.example).
+Description=exo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=exo
+Group=exo
+EnvironmentFile=/etc/exo/exo.env
+EnvironmentFile=-/etc/exo/claude.env
+ExecStart=/usr/local/bin/exo serve
+Restart=always
+RestartSec=5
+# Claude Code turns are children of this unit and count here. Background jobs
+# run as their own transient units, so restarts don't touch them.
+MemoryMax=6G
+TasksMax=2048
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

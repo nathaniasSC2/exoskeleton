@@ -1,0 +1,10 @@
+{{template "head" .}}<h1>Schedule</h1>
+{{if not .Status.Schedule}}<p class="note">Script jobs are <b>off</b> (EXO_SCHEDULE=0). Built-in maintenance still runs.</p>{{end}}
+<table><thead><tr><th>job</th><th>cron</th><th>command</th><th>delivers to</th><th>next</th><th></th></tr></thead><tbody>
+{{range .Entries}}<tr><td>{{.Name}}</td><td><code>{{.Cron}}</code></td><td><code>{{clip .Cmd 70}}</code></td><td>{{or .Deliver "log only"}}</td><td>{{until .Next}}</td>
+<td><form method="post" action="/schedule/{{.Name}}/run"><button>Run now</button></form></td></tr>{{end}}</tbody></table>
+<h2>Recent runs</h2>
+<table><thead><tr><th>job</th><th>started</th><th>exit</th><th>sent</th><th>output</th></tr></thead><tbody>
+{{range .Runs}}<tr class="{{if ne .Exit 0}}st-error{{end}}"><td>{{.Name}}</td><td>{{ts .Started}}</td><td>{{.Exit}}</td><td>{{if eq .Delivered 1}}✓{{end}}</td><td class="msg"><details><summary>{{or (clip .Output 100) "(silent)"}}</summary><pre>{{.Output}}</pre></details></td></tr>
+{{else}}<tr><td colspan=5 class="empty">No runs yet.</td></tr>{{end}}</tbody></table>
+{{template "foot" .}}

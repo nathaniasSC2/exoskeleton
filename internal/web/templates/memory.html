@@ -1,0 +1,11 @@
+{{template "head" .}}<div class="row-between"><h1>Memory</h1>
+<form class="inline" method="get">{{$p := .Person}}<select name="person" onchange="this.form.submit()">{{range .People}}<option {{if eq .ID $p}}selected="selected"{{end}}>{{.ID}}</option>{{end}}</select></form></div>
+<p class="dim">Pinned facts go into every system prompt, so keep them few and durable. Unpinned facts are pulled in only when a message mentions them, or through <code>recall</code>.</p>
+{{if .PrivateCount}}<p class="note">🔒 {{.Person}}'s memory is private: {{.PrivateCount}} saved facts.</p>{{else}}<form method="post" action="/memory" class="inline wide"><input type="hidden" name="person" value="{{.Person}}"><input type="hidden" name="op" value="add">
+<input name="text" placeholder="New fact" required><label><input type="checkbox" name="pinned" value="1"> pinned</label><button>Add</button></form>
+<table><tbody>{{range .Facts}}<tr><td class="n">{{.ID}}</td><td>{{if .Pinned}}📌 {{end}}{{.Text}}<small>{{.Source}} · {{ts .Created}}</small></td>
+<td class="n"><form method="post" action="/memory" class="inline"><input type="hidden" name="person" value="{{.Person}}"><input type="hidden" name="id" value="{{.ID}}">
+{{if .Pinned}}<button name="op" value="unpin">unpin</button>{{else}}<button name="op" value="pin">pin</button>{{end}}
+<button name="op" value="delete" data-confirm="Delete this fact?">delete</button></form></td></tr>
+{{else}}<tr><td class="empty">No facts.</td></tr>{{end}}</tbody></table>{{end}}
+{{template "foot" .}}

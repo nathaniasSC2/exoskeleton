@@ -1,0 +1,8 @@
+{{template "head" .}}<h1>Prompts</h1>
+<p class="dim">soul (or soul-&lt;person&gt;) and rules go into every chat turn; admin.md only for admins; job.md is appended to background jobs. Saved edits apply on the next message. This file is ~{{.Tokens}} tokens.</p>
+<div class="tabs">{{$n := .Name}}{{range .Names}}<a href="/prompts?name={{.}}" {{if eq . $n}}class="on"{{end}}>{{.}}</a>{{end}}</div>
+{{if .Saved}}<p class="note">Saved.</p>{{end}}
+<form method="post" action="/prompts" class="stack"><input type="hidden" name="name" value="{{.Name}}">
+<textarea name="content" rows="22" spellcheck="false">{{.Content}}</textarea><div><button>Save</button></div></form>
+<h2>History</h2><table><tbody>{{range .Versions}}<tr><td><code>{{.Hash}}</code></td><td>{{ts .Saved}}</td><td><a href="/prompts?name={{.Name}}&version={{.ID}}">load into editor</a></td></tr>{{end}}</tbody></table>
+{{template "foot" .}}

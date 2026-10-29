@@ -1,0 +1,9 @@
+{{template "head" .}}{{with .J}}
+<div class="row-between"><h1>Job #{{.ID}} <small>{{.Status}} · {{.Workdir}}</small></h1>
+{{if eq .Status "running"}}<form method="post" action="/job/{{.ID}}/cancel"><button data-confirm="Cancel this job?">Cancel</button></form>{{end}}</div>
+<h2>Task</h2><pre class="msg">{{.Task}}</pre>
+{{if .Result}}<h2>Report</h2><pre class="msg">{{.Result}}</pre>{{end}}
+<p class="dim">created {{ts .Created}} · started {{ts .Started}} · finished {{ts .Finished}} · {{usd .Cost}} · log <code>{{.LogPath}}</code></p>
+{{end}}<h2>Activity (latest)</h2><pre>{{or .Log "—"}}</pre>
+{{if eq .J.Status "running"}}<meta http-equiv="refresh" content="10">{{end}}
+{{template "foot" .}}

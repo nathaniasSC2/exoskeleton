@@ -1,0 +1,15 @@
+{{template "head" .}}
+<div class="row-between"><h1>Live</h1>
+<form class="inline" method="get">
+<select name="person" onchange="this.form.submit()"><option value="">everyone</option>{{range .People}}<option value="{{.ID}}" {{if eq $.F.Person .ID}}selected="selected"{{end}}>{{.ID}}</option>{{end}}</select>
+<label><input type="checkbox" name="errors" value="1" {{if .F.Errors}}checked="checked"{{end}} onchange="this.form.submit()"> errors</label>
+<label><input type="checkbox" name="feedback" value="1" {{if .F.Feedback}}checked="checked"{{end}} onchange="this.form.submit()"> feedback</label>
+</form>
+<form class="inline" method="post" action="/mode">
+{{if ne .Status.Mode "claude"}}<button name="mode" value="claude">Switch to Claude</button> {{end}}{{if ne .Status.Mode "local"}}<button name="mode" value="local" data-confirm="Switch to the local model (starts it with EXO_LOCAL_START if it is not running)?">Switch to local</button>{{end}}
+</form></div>
+<table class="turns" id="turns" data-live="{{if not .F.BeforeID}}1{{end}}" data-q="{{.Q}}">
+<thead><tr><th>time</th><th>who</th><th>message → reply</th><th>brain</th><th>took</th><th>ctx</th><th></th></tr></thead>
+<tbody>{{range .Turns}}{{template "row" .}}{{else}}<tr><td colspan=7 class="empty">No turns yet. Try the <a href="/console">console</a>.</td></tr>{{end}}</tbody></table>
+{{if .Older}}<p><a href="/?before={{.Older}}&person={{.F.Person}}">older →</a></p>{{end}}
+{{template "foot" .}}

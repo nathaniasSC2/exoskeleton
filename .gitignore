@@ -1,0 +1,10 @@
+# build output
+/bin/
+/dist/
+/exo
+*.exe
+# local runtime data and secrets: live config sits in /etc/exo
+*.db
+*.db-*
+*.env
+/data/

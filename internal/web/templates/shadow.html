@@ -1,0 +1,19 @@
+{{template "head" .}}<h1>Shadow</h1>
+<p class="dim">The local model answers the same request Claude just answered, in the background: never sent, side effects skipped (read-only shell still runs). Variants: <b>{{or .Variants "off (set EXO_SHADOW)"}}</b> · queue {{.Queued}}{{if .Running}} · running turn #{{.Running}}{{end}} · {{.Done}} done since start. Judge each local answer against Claude's: <b>better</b>, <b>same</b> (as useful), <b>worse</b> (usable but weaker), <b>wrong</b> (incorrect, invented, or harmful).</p>
+<form method="post" action="/shadow/history" class="inline">Replay the last <input name="n" type="number" value="25" min="1" max="500" class="num"> Claude turns as
+<select name="variants"><option value="fast">fast</option><option value="think">think</option><option value="fast,think">fast + think</option></select>
+<button>Queue</button></form>
+<table><thead><tr><th>source</th><th>rev</th><th>variant</th><th>model</th><th>n</th><th>p50</th><th>p90</th><th>avg ctx/out</th><th>errors</th><th>empty</th><th>cold</th><th>better / same / worse / wrong</th></tr></thead><tbody>
+{{range .Stats}}<tr><td>{{.Source}}</td><td>{{.Rev}}</td><td>{{.Variant}}</td><td>{{.Gear}}</td><td>{{.N}}</td><td>{{secs .P50MS}}</td><td>{{secs .P90MS}}</td><td>{{k .AvgIn}} / {{k .AvgOut}}</td><td>{{.Errors}}</td><td>{{.Empty}}</td><td>{{.Cold}}</td><td>{{.Better}} / {{.Same}} / {{.Worse}} / {{.Wrong}}</td></tr>
+{{else}}<tr><td colspan="12" class="dim">No shadow runs yet.</td></tr>{{end}}</tbody></table>
+<p><a href="/shadow">all</a> · <a href="/shadow?source=live">live</a> · <a href="/shadow?source=history">history</a> · <a href="/shadow?variant=fast">fast</a> · <a href="/shadow?variant=think">think</a> · <a href="/shadow?unjudged=1{{if .Source}}&amp;source={{.Source}}{{end}}">unjudged</a> · <a href="/api/shadow">json</a></p>
+{{range .Turns}}<div class="cmp"><div class="q"><a href="/turn/{{.Turn.ID}}">#{{.Turn.ID}}</a> <small class="dim">{{ts .Turn.Started}} · {{.Turn.Channel}}</small><br>{{.Turn.Input}}</div>
+<div class="grid2"><div><small>Claude · {{secs .Turn.LatencyMS}} · {{k (addTok .Turn.InTok .Turn.CacheRead .Turn.CacheWrite)}} tok{{if .Turn.Tools}} · ⚙ {{.Turn.Tools}}{{end}}</small><pre class="msg">{{.Turn.Reply}}</pre></div>
+<div>{{range .Rows}}<div id="s{{.ID}}"><small>local {{.Rev}} {{.Variant}} · {{.Gear}}{{if .Cold}} · cold{{end}} · {{secs .LatencyMS}} · {{k .InTok}}/{{k .OutTok}} tok{{if .Tools}} · ⚙ {{.Tools}}{{end}} · <i>{{.Source}}</i></small>
+<pre class="msg">{{if .Error}}⚠ {{.Error}}{{else if .Reply}}{{.Reply}}{{else}}(empty){{end}}</pre>
+{{if .Steps}}<details><summary class="dim">{{len .Steps}} tool steps</summary>{{range .Steps}}<pre class="dim">{{.K}} {{.N}} {{clip .B 600}}</pre>{{end}}</details>{{end}}
+<form method="post" action="/shadow/{{.ID}}/verdict" class="inline">{{$v := .Verdict}}
+<button name="v" value="better" {{if eq $v "better"}}class="on"{{end}}>better</button><button name="v" value="same" {{if eq $v "same"}}class="on"{{end}}>same</button><button name="v" value="worse" {{if eq $v "worse"}}class="on"{{end}}>worse</button><button name="v" value="wrong" {{if eq $v "wrong"}}class="on"{{end}}>wrong</button>
+<input name="note" value="{{.Note}}" placeholder="why (optional)" size="18"></form></div>{{end}}</div></div></div>
+{{end}}{{if .Running}}<meta http-equiv="refresh" content="20">{{end}}
+{{template "foot" .}}

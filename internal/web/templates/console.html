@@ -1,0 +1,8 @@
+{{template "head" .}}<h1>Console</h1>
+<p class="dim">Runs a message through the real pipeline (same prompt, tools, memory and history) as the chosen person. Nothing is sent anywhere; the reply shows below and on Live.</p>
+<form method="post" action="/console" class="stack" enctype="multipart/form-data">
+<div><select name="person">{{range .People}}<option>{{.ID}}</option>{{end}}</select></div>
+<textarea name="text" rows="3" placeholder="Say something to {{.Status.Name}}" autofocus></textarea>
+<div><input type="file" name="image" accept="image/*,audio/*"> <small class="dim">image or voice memo</small></div><div><button>Send</button></div></form>
+<table class="turns" id="turns" data-live="1" data-q="kind=chat"><tbody>{{range .Turns}}{{template "row" .}}{{end}}</tbody></table>
+{{template "foot" .}}

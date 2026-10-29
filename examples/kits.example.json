@@ -1,0 +1,9 @@
+{
+  "blender": {
+    "short": "model or render in Blender; result images are sent back",
+    "desc": "Start a background session with Blender through its MCP add-on. Use for 3D models, renders and product shots. It sends the finished images.",
+    "dir": "/srv/blender",
+    "brief": "This is a Blender session. Look at every render before sending it, fix what's off, then send_file the finals.",
+    "mcp": {"type": "stdio", "command": "uvx", "args": ["blender-mcp"]}
+  }
+}

@@ -1,0 +1,22 @@
+{{template "head" .}}{{with .T}}
+<h1>Turn #{{.ID}} <small>{{.Person}} · {{.Channel}} · {{.Kind}} · {{ts .Started}}</small></h1>
+<div class="grid2">
+<section><h2>{{.Person}}</h2><pre class="msg">{{.Input}}</pre>
+<h2>{{$.Status.Name}} {{if .Error}}<span class="badtxt">({{.Status}})</span>{{end}}</h2><pre class="msg">{{if .Error}}{{.Error}}{{else}}{{.Reply}}{{end}}</pre>
+{{if .Attachments}}<p class="dim">attachments: {{range lines .Attachments}}{{.}} {{end}}</p>{{end}}</section>
+<section><h2>Numbers</h2><table class="kv">
+<tr><th>brain</th><td>{{.Engine}}</td></tr><tr><th>latency</th><td>{{secs .LatencyMS}}</td></tr>
+<tr><th>input</th><td>{{.InTok}} new · {{.CacheRead}} cache read · {{.CacheWrite}} cache write</td></tr>
+<tr><th>output</th><td>{{.OutTok}}</td></tr><tr><th>cost-equiv</th><td>{{usd .Cost}}</td></tr>
+<tr><th>tools</th><td>{{.Tools}}</td></tr><tr><th>prompt</th><td><code>{{.PromptHash}}</code></td></tr></table>
+<h2>Feedback</h2>
+<form method="post" action="/turn/{{.ID}}/feedback" class="stack">
+<textarea name="note" rows="2" placeholder="What should it have done?">{{.FeedbackNote}}</textarea>
+<div><button name="score" value="1" {{if gt .Feedback 0}}class="on"{{end}}>👍</button> <button name="score" value="-1" {{if lt .Feedback 0}}class="on"{{end}}>👎</button> <button name="score" value="0">clear</button></div>
+</form>
+<p class="dim">👎 turns become a replay set on the Replay page. A 👎 reaction in a channel that supports them lands here too.</p></section></div>
+{{end}}
+{{if .Private}}<p class="note">🔒 This conversation is private. Shown: when it happened, how it went, and any error.</p>{{else}}<h2>Trace</h2>
+{{if .System}}<details><summary>system prompt ({{len .System}} chars)</summary><pre>{{.System}}</pre></details>{{end}}
+{{range .Trace}}<details class="tr k-{{.Kind}}" {{if or (eq .Kind "tool_call") (eq .Kind "error")}}open="open"{{end}}><summary><b>{{.Kind}}</b> {{.Name}} <small>{{clip .Body 120}}</small></summary><pre>{{.Body}}</pre></details>{{else}}<p class="dim">No trace (older than 30 days, or a notice).</p>{{end}}{{end}}
+{{template "foot" .}}
