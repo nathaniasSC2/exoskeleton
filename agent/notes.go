@@ -24,6 +24,11 @@ func (a *Agent) noteHints(input string) string {
 		return "" // "ok thanks" needs no notes
 	}
 	q := strings.TrimSpace(input)
+	if strings.HasPrefix(q, "[") { // a channel tag like "[voice]" is not part of what was said
+		if _, rest, ok := strings.Cut(q, "]"); ok {
+			q = strings.TrimSpace(rest)
+		}
+	}
 	if len(q) > 400 {
 		q = q[:400]
 	}

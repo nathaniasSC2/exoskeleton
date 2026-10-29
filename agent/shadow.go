@@ -87,6 +87,7 @@ type shadowJob struct {
 	ch      string
 	chat    string
 	req     *engine.Request
+	deny    map[string]bool
 }
 
 type shadowState struct {
@@ -118,9 +119,13 @@ func (a *Agent) shadowLive(p *config.Person, ch, chat string, turn int64, out tu
 	if out.req == nil || !p.Admin || ch == "console" {
 		return
 	}
-	for _, v := range a.shadowVariants() {
+	variants := a.shadowVariants()
+	if out.opts.shadow != "" {
+		variants = parseVariants(out.opts.shadow)
+	}
+	for _, v := range variants {
 		select {
-		case a.sh.live <- shadowJob{turn: turn, source: "live", variant: v, p: p, ch: ch, chat: chat, req: out.req}:
+		case a.sh.live <- shadowJob{turn: turn, source: "live", variant: v, p: p, ch: ch, chat: chat, req: out.req, deny: out.opts.deny}:
 		default:
 			slog.Warn("shadow queue full; dropped", "turn", turn, "variant", v)
 		}
@@ -186,7 +191,7 @@ func (a *Agent) ShadowHistory(n, sample int, before int64, ids []int64, variants
 		}
 		rs = picked
 	}
-	queued, gear := 0, a.Local.Model
+	queued, gear := 0, a.gear()
 	for i := len(rs) - 1; i >= 0; i-- { // oldest first, like the conversation went
 		r := rs[i]
 		sys := a.Store.System(r.hash)
@@ -254,7 +259,7 @@ func (a *Agent) runShadow(ctx context.Context, j shadowJob) {
 		a.Store.AddShadow(&store.Shadow{TurnID: j.turn, Source: j.source, Variant: j.variant, Rev: shadowRev, Error: "local model not reachable"})
 		return
 	}
-	tc := &tools.Ctx{Person: j.p, Channel: j.ch, Chat: j.chat, TurnID: j.turn, Engine: "local", Replay: true}
+	tc := &tools.Ctx{Person: j.p, Channel: j.ch, Chat: j.chat, TurnID: j.turn, Engine: "local", Replay: true, Deny: j.deny}
 	var items []traceItem
 	req := *j.req
 	req.User = append([]engine.Block(nil), j.req.User...)
@@ -274,7 +279,7 @@ func (a *Agent) runShadow(ctx context.Context, j shadowJob) {
 	if n := len(req.User) - 1; n > 0 {
 		req.Trace("init", "images", fmt.Sprint(n))
 	}
-	x.Gear, x.Cold = a.Local.Model, a.localSleeping(ctx)
+	x.Gear, x.OBS, x.Cold = a.gear(), a.Busy != nil && a.Busy(), a.localSleeping(ctx)
 	sctx, cancel := context.WithTimeout(ctx, a.Cfg.LocalTimeout)
 	start := time.Now()
 	res := eng.Turn(sctx, &req)
@@ -302,6 +307,16 @@ func insertAfterLine(text, prefix, add string) string {
 	}
 	at := i + 1 + nl + 1
 	return text[:at] + add + text[at:]
+}
+
+// gear names the local model setup a shadow row ran on.
+func (a *Agent) gear() string {
+	if a.Gear != nil {
+		if g := a.Gear(); g != "" {
+			return g
+		}
+	}
+	return a.Local.Model
 }
 
 // localSleeping asks llama-server whether the model is unloaded (its sleep

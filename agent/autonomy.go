@@ -174,6 +174,8 @@ func (a *Agent) Heartbeat(ctx context.Context) (string, error) {
 		when := time.Unix(t.Started, 0).In(a.Cfg.Loc).Format("Mon 3:04PM")
 		if t.Kind == "chat" {
 			lines = append(lines, fmt.Sprintf("[%s %s] %s: %s\n  %s: %s", when, t.Channel, p.Name, oneLine(t.Input, 400), a.Cfg.Name, oneLine(t.Reply, 400)))
+		} else if t.Kind == "external" {
+			lines = append(lines, fmt.Sprintf("[%s] (sent to %s by another system): %s", when, p.Name, oneLine(t.Reply, 300)))
 		} else if t.Kind == "action" {
 			lines = append(lines, fmt.Sprintf("[%s] (server change log): %s", when, oneLine(t.Reply, 300)))
 		} else {
@@ -313,6 +315,9 @@ func (a *Agent) SetInterests(person, text string) error {
 		text = text[:2000]
 	}
 	a.Store.Set("interests:"+person, text)
+	if a.OnInterests != nil {
+		return a.OnInterests(person, text)
+	}
 	return nil
 }
 

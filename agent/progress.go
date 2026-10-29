@@ -67,8 +67,8 @@ func (a *Agent) checkIn(p *config.Person, ch, chat string, tc *tools.Ctx, start 
 	return func() { t.Stop() }
 }
 
-// activityNames words tool use for a progress note: tool -> {one, many}.
-var activityNames = map[string][2]string{
+// ActivityNames words tool use for a progress note: tool -> {one, many}.
+var ActivityNames = map[string][2]string{
 	"web_search": {"search", "searches"}, "fetch": {"page read", "pages read"}, "WebSearch": {"search", "searches"}, "WebFetch": {"page read", "pages read"},
 	"shell": {"server check", "server checks"}, "notes_read": {"note read", "notes read"}, "notes_search": {"note search", "note searches"},
 	"recall": {"memory lookup", "memory lookups"}, "jobs": {"job check", "job checks"},
@@ -79,7 +79,7 @@ func activity(used []string) string {
 	var order [][2]string
 	count := map[[2]string]int{}
 	for _, u := range used {
-		n, ok := activityNames[u]
+		n, ok := ActivityNames[u]
 		if !ok {
 			n = [2]string{u + " call", u + " calls"}
 		}

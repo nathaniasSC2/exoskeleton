@@ -8,11 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -50,9 +52,14 @@ type Agent struct {
 	Jobs   *jobs.Runner
 
 	Senders map[string]channel.Sender
-	Discord *channel.Discord
 	Sched   *sched.Scheduler
 
+	// Optional hooks for a deployment built on exo.
+	OnInterests func(person, text string) error // after the heartbeat saves the interests list
+	Gear        func() string                   // which local model setup is loaded, for shadow rows (default: the model name)
+	Busy        func() bool                     // something heavy is running on the box, for shadow rows
+
+	chans  map[string]*Channel
 	mu     sync.Mutex
 	wake   map[string]chan struct{}
 	active sync.Map // turn ID -> *tools.Ctx
@@ -108,22 +115,59 @@ func (a *Agent) Lookup(key string) *tools.Ctx {
 	return nil
 }
 
-// Register makes a tool context reachable over MCP until the returned func runs.
+// Register makes a tool context reachable over MCP until the returned func
+// runs, which also runs the context's cleanups (Ctx.OnDone).
 func (a *Agent) Register(key string, c *tools.Ctx) func() {
 	c.Key = key
 	a.active.Store(key, c)
-	return func() { a.active.Delete(key) }
+	return func() {
+		a.active.Delete(key)
+		c.Close()
+	}
+}
+
+// ---- channels ----
+
+// Channel is a messaging platform: how to send on it, who an inbound message
+// is from, and where to reach a person unprompted.
+type Channel struct {
+	Name        string
+	Label       string // how the prompt names it ("Discord DM"); "" keeps the current one
+	Sender      channel.Sender
+	Who         func(in channel.Inbound) *config.Person // nil result = not someone we answer
+	ChatFor     func(p *config.Person) (string, error)  // the chat for unprompted messages (reminders, reports)
+	TypingEvery time.Duration                           // re-send the typing indicator this often (0 = once)
+}
+
+// ChannelNames is how the prompt names each channel.
+var ChannelNames = map[string]string{"discord": "Discord DM", "console": "dashboard test console"}
+
+// AddChannel registers a channel (before Run). Its sender goes into Senders
+// as given, so wrap it in channel.DryRun first if needed.
+func (a *Agent) AddChannel(c Channel) {
+	if a.chans == nil {
+		a.chans = map[string]*Channel{}
+	}
+	if a.Senders == nil {
+		a.Senders = map[string]channel.Sender{}
+	}
+	a.chans[c.Name] = &c
+	if c.Sender != nil {
+		a.Senders[c.Name] = c.Sender
+	}
+	if c.Label != "" {
+		ChannelNames[c.Name] = c.Label
+	}
 }
 
 // ---- inbound ----
 
 func (a *Agent) Handle(in channel.Inbound) {
 	var p *config.Person
-	switch in.Channel {
-	case "discord":
-		p = a.Cfg.ByDiscord(in.Sender)
-	case "console":
+	if in.Channel == "console" {
 		p = a.Cfg.Person(in.Sender)
+	} else if c := a.chans[in.Channel]; c != nil && c.Who != nil {
+		p = c.Who(in)
 	}
 	if p == nil {
 		slog.Info("ignored message from unknown sender", "channel", in.Channel) // not stored: not ours to keep
@@ -211,6 +255,7 @@ type turnOut struct {
 	files []string
 	err   *engine.Result
 	req   *engine.Request // what the brain was given (shadow runs replay it on the local model)
+	opts  turnOpts
 }
 
 func (a *Agent) turn(ctx context.Context, p *config.Person, ch, chat, input string, images []string, eventIDs []int64) {
@@ -234,17 +279,60 @@ func (a *Agent) turn(ctx context.Context, p *config.Person, ch, chat, input stri
 	a.deliver(ctx, p, ch, chat, id, out.reply, out.files)
 }
 
+// TurnOpts varies a turn run through Answer.
+type TurnOpts struct {
+	System       string          // extra system-prompt section
+	Model        string          // Claude model and effort for this turn ("" = configured)
+	Effort       string          //
+	LocalVariant string          // the local engine's variant for this turn ("" = configured)
+	Deny         map[string]bool // tools withheld (shadow runs too)
+	Shadow       string          // shadow variants for this turn, e.g. "fast" ("" = EXO_SHADOW's)
+}
+
+// ErrHeld is Answer's error while Claude is down and the admin hasn't picked a fallback.
+var ErrHeld = errors.New("the brain is unavailable right now")
+
+// Answer runs one chat turn whose reply goes back to the caller instead of
+// a channel: a voice bridge, an API. It's recorded on channel ch and
+// shadowed like any chat turn, with no typing indicator or check-in.
+// Channel "console" keeps it out of history and shadow runs (tests).
+func (a *Agent) Answer(ctx context.Context, person, ch, chat, input string, o TurnOpts) (string, error) {
+	p := a.Cfg.Person(person)
+	if p == nil {
+		return "", fmt.Errorf("unknown person %q", person)
+	}
+	if input = strings.TrimSpace(input); input == "" {
+		return "", fmt.Errorf("empty message")
+	}
+	if a.mode() == "held" {
+		return "", ErrHeld
+	}
+	id := a.Store.StartTurn(p.ID, ch, chat, "chat", input)
+	out := a.runTurnOpts(ctx, p, id, ch, chat, input, nil, turnOpts{system: o.System, model: o.Model, effort: o.Effort,
+		localVariant: o.LocalVariant, deny: o.Deny, shadow: o.Shadow, noCheckIn: true})
+	if out.err != nil && out.err.Err != nil {
+		return "", out.err.Err
+	}
+	if a.mode() == "claude" {
+		a.shadowLive(p, ch, chat, id, out)
+	}
+	return out.reply, nil
+}
+
 // runTurn does one turn on the current brain and records it. It does not deliver.
 // turnOpts vary a turn for the non-chat callers.
 type turnOpts struct {
-	replay   bool            // historical message: no side effects, no history
-	eval     bool            // fixed eval prompt: side effects stubbed, no history, but full live context (note hints, facts)
-	set      string          // toolset ("" chat, "heartbeat")
-	deny     map[string]bool // tools withheld
-	noRecent bool            // skip the recent conversation (routines; the heartbeat brings its own digest)
-	system   string          // extra system-prompt section (routine/heartbeat brief)
-	model    string          // engine overrides for this turn
-	effort   string
+	replay       bool            // historical message: no side effects, no history
+	eval         bool            // fixed eval prompt: side effects stubbed, no history, but full live context (note hints, facts)
+	set          string          // toolset ("" chat, "heartbeat")
+	deny         map[string]bool // tools withheld
+	noRecent     bool            // skip the recent conversation (routines; the heartbeat brings its own digest)
+	system       string          // extra system-prompt section (routine/heartbeat brief)
+	model        string          // engine overrides for this turn
+	effort       string
+	localVariant string // the local engine's variant for this turn
+	noCheckIn    bool   // no progress note (the reply isn't delivered as a message)
+	shadow       string // shadow variants instead of the configured ones
 }
 
 func (a *Agent) runTurn(ctx context.Context, p *config.Person, id int64, ch, chat, input string, images []string, replay bool) turnOut {
@@ -291,7 +379,7 @@ func (a *Agent) runTurnOpts(ctx context.Context, p *config.Person, id int64, ch,
 	stopTyping := a.typing(ctx, ch, chat, replay)
 	start := time.Now()
 	stopCheckIn := func() {}
-	if !replay && o.set == "" && o.system == "" { // chat turns, not routines
+	if !replay && o.set == "" && o.system == "" && !o.noCheckIn { // chat turns, not routines
 		stopCheckIn = a.checkIn(p, ch, chat, tc, start)
 	}
 	timeout := a.Cfg.TurnTimeout
@@ -326,18 +414,18 @@ func (a *Agent) runTurnOpts(ctx context.Context, p *config.Person, id int64, ch,
 		t.Status = "replay"
 	}
 	a.Store.FinishTurn(t)
-	out := turnOut{reply: t.Reply, files: files, req: req}
+	out := turnOut{reply: t.Reply, files: files, req: req, opts: o}
 	if res.Err != nil {
 		out.err = res
 	}
 	return out
 }
 
-// effortFor is the per-turn effort override (Claude only; the local engine
-// uses its configured variant).
+// effortFor is the per-turn effort override: Claude's effort level, or for
+// the local engine a variant ("" = the configured one).
 func (a *Agent) effortFor(eng engine.Engine, o turnOpts) string {
 	if eng.Name() == "local" {
-		return ""
+		return o.localVariant
 	}
 	return o.effort
 }
@@ -360,20 +448,26 @@ func (a *Agent) typing(ctx context.Context, ch, chat string, replay bool) func()
 	if s == nil || replay {
 		return func() {}
 	}
+	every := time.Duration(0)
+	if c := a.chans[ch]; c != nil {
+		every = c.TypingEvery
+	}
 	tctx, cancel := context.WithCancel(ctx)
 	go func() {
-		t := time.NewTicker(8 * time.Second) // Discord's indicator lasts ~10s
-		defer t.Stop()
+		var tick <-chan time.Time
+		if every > 0 {
+			t := time.NewTicker(every)
+			defer t.Stop()
+			tick = t.C
+		}
 		s.Typing(tctx, chat, true)
 		for {
 			select {
 			case <-tctx.Done():
 				s.Typing(context.Background(), chat, false)
 				return
-			case <-t.C:
-				if ch == "discord" {
-					s.Typing(tctx, chat, true)
-				}
+			case <-tick:
+				s.Typing(tctx, chat, true)
 			}
 		}
 	}()
@@ -444,7 +538,7 @@ func (a *Agent) notify(person, ch, chat, kind, text string, files []string) {
 	a.deliver(context.Background(), p, ch, chat, id, text, files)
 }
 
-// DeliverTarget resolves "discord:<person>" for scheduled jobs.
+// DeliverTarget resolves "<channel>:<person>" (e.g. "discord:alex") for scheduled jobs.
 func (a *Agent) DeliverTarget(target, text string) error {
 	p, ch, chat, err := a.resolveTarget(target)
 	if err != nil {
@@ -454,23 +548,31 @@ func (a *Agent) DeliverTarget(target, text string) error {
 	return nil
 }
 
+// Ping sends a harness notice (a link, a status line) to a target as kind
+// "system": delivered and recorded, but never part of the conversation
+// (history, recall, the heartbeat).
+func (a *Agent) Ping(target, text string) error {
+	p, ch, chat, err := a.resolveTarget(target)
+	if err != nil {
+		return err
+	}
+	a.notify(p.ID, ch, chat, "system", text, nil)
+	return nil
+}
+
 func (a *Agent) resolveTarget(target string) (*config.Person, string, string, error) {
 	ch, who, _ := strings.Cut(target, ":")
 	p := a.Cfg.Person(who)
 	if p == nil {
 		return nil, "", "", fmt.Errorf("unknown person in %q", target)
 	}
-	chat := ""
-	switch ch {
-	case "discord":
-		if a.Discord == nil || p.Discord == "" {
-			return nil, "", "", fmt.Errorf("discord not available")
-		}
-		c, err := a.Discord.DM(p.Discord)
-		if err != nil {
-			return nil, "", "", err
-		}
-		chat = c
+	c := a.chans[ch]
+	if c == nil || c.ChatFor == nil {
+		return nil, "", "", fmt.Errorf("%s not available", ch)
+	}
+	chat, err := c.ChatFor(p)
+	if err != nil {
+		return nil, "", "", err
 	}
 	if chat == "" {
 		return nil, "", "", fmt.Errorf("no chat for %q", target)
@@ -495,8 +597,6 @@ func (a *Agent) reminderLoop(ctx context.Context) {
 }
 
 // ---- prompt assembly ----
-
-var channelNames = map[string]string{"discord": "Discord DM", "console": "dashboard test console"}
 
 // localBrainNote tells the local model what it can't do (shadow runs add it too).
 const localBrainNote = "Brain: the local model (Claude is unavailable). Background jobs run on the local model too (slower; give them small, concrete tasks); shell is read-only: say what you'd run for anything that changes the server, or hand it to a job. Before saying anything is running, done, sent, scheduled or being worked on, check it with a tool in this turn (jobs, shell, reminder); if you can't do something, say so plainly. Use the toolbox for live facts (the server, jobs, notes, older conversations) instead of memory, and web_search anything you'd otherwise be guessing; search results are only snippets, so fetch the best page before stating specifics. When asked for something done, do it with a tool (usually start_job) rather than describing a plan or asking whether you should. Never tell the person you can't do something you haven't tried with a tool this turn. Never narrate checking or fixing your own answer: they only see the final message.\n"
@@ -604,12 +704,28 @@ func (a *Agent) systemPrompt(p *config.Person) (string, string) {
 	return s, h
 }
 
+// promptFS holds the built-in default prompts; later layers win (AddPrompts).
+var promptFS = []fs.FS{prompts.Defaults}
+
+// AddPrompts layers more built-in prompts over exo's: new names show up on
+// the Prompts page, and the same name replaces exo's default. Call before Init.
+func AddPrompts(f fs.FS) { promptFS = append(promptFS, f) }
+
+func defaultPrompt(name string) ([]byte, error) {
+	for i := len(promptFS) - 1; i >= 0; i-- {
+		if b, err := fs.ReadFile(promptFS[i], name); err == nil {
+			return b, nil
+		}
+	}
+	return nil, fs.ErrNotExist
+}
+
 // prompt reads an editable prompt (the data dir's copy, else the built-in
 // default) with {{name}} replaced by the assistant's name.
 func (a *Agent) prompt(name string) string {
 	b, err := os.ReadFile(a.Cfg.Path("prompts", name))
 	if err != nil {
-		b, _ = prompts.Defaults.ReadFile(name)
+		b, _ = defaultPrompt(name)
 	}
 	return strings.ReplaceAll(strings.TrimSpace(string(b)), "{{name}}", a.Cfg.Name)
 }
@@ -624,7 +740,7 @@ func (a *Agent) soul(p *config.Person) string {
 }
 
 func channelName(ch string) string {
-	if n := channelNames[ch]; n != "" {
+	if n := ChannelNames[ch]; n != "" {
 		return n
 	}
 	return ch
@@ -635,13 +751,18 @@ func (a *Agent) JobBrief() string { return a.prompt("job.md") }
 
 // PromptNames lists the editable prompt files.
 func PromptNames() []string {
+	seen := map[string]bool{}
 	var out []string
-	fs.WalkDir(prompts.Defaults, ".", func(p string, d fs.DirEntry, _ error) error {
-		if strings.HasSuffix(p, ".md") {
-			out = append(out, p)
-		}
-		return nil
-	})
+	for _, f := range promptFS {
+		fs.WalkDir(f, ".", func(p string, d fs.DirEntry, _ error) error {
+			if strings.HasSuffix(p, ".md") && !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+			return nil
+		})
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -679,7 +800,7 @@ func (a *Agent) writeDefaultPrompts() error {
 		if _, err := os.Stat(p); err == nil {
 			continue
 		}
-		b, _ := prompts.Defaults.ReadFile(n)
+		b, _ := defaultPrompt(n)
 		if err := os.WriteFile(p, b, 0o644); err != nil {
 			return err
 		}
@@ -746,6 +867,12 @@ func clipErr(err error) string {
 	}
 	return s
 }
+
+// Admin is the first admin (heartbeat, failover questions, self-checks).
+func (a *Agent) Admin() *config.Person { return a.admin() }
+
+// LastChat is where a person last talked to the assistant, falling back to their home channel.
+func (a *Agent) LastChat(p *config.Person) (string, string) { return a.lastChat(p) }
 
 // SystemPromptFor exposes the assembled system prompt (for `exo budget`).
 func (a *Agent) SystemPromptFor(p *config.Person) string { s, _ := a.systemPrompt(p); return s }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -156,11 +157,13 @@ func describe(res *engine.Result) string {
 }
 
 // localCmd runs EXO_LOCAL_START or EXO_LOCAL_STOP (whatever starts or stops
-// the local model's server on this box).
-func (a *Agent) localCmd(ctx context.Context, cmd string) error {
+// the local model's server on this box), with the reason in $EXO_WHY.
+func (a *Agent) localCmd(ctx context.Context, cmd, why string) error {
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, "bash", "-c", cmd).CombinedOutput()
+	c := exec.CommandContext(cctx, "bash", "-c", cmd)
+	c.Env = append(os.Environ(), a.Cfg.Brand.Prefix+"_WHY="+why)
+	out, err := c.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -178,7 +181,7 @@ func (a *Agent) GoLocal(ctx context.Context, reason string) error {
 			a.tellAdmin("The local model isn't running, and EXO_LOCAL_START isn't set.")
 			return fmt.Errorf("local model not ready")
 		}
-		if err := a.localCmd(ctx, a.Cfg.LocalStart); err != nil {
+		if err := a.localCmd(ctx, a.Cfg.LocalStart, "Claude unavailable: "+reason); err != nil {
 			a.tellAdmin("Couldn't start the local model: " + err.Error())
 			return err
 		}
@@ -205,7 +208,7 @@ func (a *Agent) GoClaude(ctx context.Context, why string) {
 	a.Store.Set("claude_down", "")
 	a.onSuccess()
 	if wasLocal && a.Store.Get("local_mine") == "1" && a.Cfg.LocalStop != "" {
-		if err := a.localCmd(ctx, a.Cfg.LocalStop); err != nil {
+		if err := a.localCmd(ctx, a.Cfg.LocalStop, "back on Claude: "+why); err != nil {
 			slog.Warn("stopping the local model", "err", err)
 		}
 		a.Store.Set("local_mine", "")
