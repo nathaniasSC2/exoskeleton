@@ -82,11 +82,24 @@ the dashboard and versioned.
 go test ./...
 ```
 
-## Not in this repo
+## Building on it
 
-My deployment adds an iMessage channel, Discord voice calls, a logged-in
-browsing agent, a server monitor with service switches, and the prompts and
-tools that are specific to my setup.
+`cmd/exo` is a thin main over the `app` package. A deployment with its own
+channels and tools imports the packages and adds to the app before running it:
+
+```go
+cfg, _ := config.LoadBrand(config.Brand{Prefix: "ACME", Slug: "acme"}) // ACME_* env, acme.db, mcp__acme__*
+a, _ := app.New(cfg)
+a.Agent.AddChannel(agent.Channel{Name: "sms", Sender: sms, Who: lookup, ChatFor: home})
+a.Reg.Add(&tools.Tool{Name: "scores", Where: "both", Branch: "look", Short: "live scores", Run: scores})
+a.AddBuiltin(sched.Entry{Name: "nightly-check", Cron: "10 4 * * *"}, check)
+a.Web.Mount = func(mux *http.ServeMux) { mux.HandleFunc("GET /garden", page) }
+a.Run(ctx)
+```
+
+My own assistant runs this way: the same core plus an iMessage channel,
+Discord voice calls, a logged-in browsing agent, a server monitor with
+service switches, and the prompts and tools specific to my setup.
 
 ## License
 
