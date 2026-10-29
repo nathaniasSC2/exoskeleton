@@ -39,8 +39,14 @@ type Runner struct {
 	// then run Claude Code against it (llama-server's Anthropic-compatible API),
 	// one at a time, since they share its context pool with chat.
 	Local func() bool
+	// UnitArgs adds systemd-run arguments for a job's unit (e.g. -p
+	// ExecStartPre=... to reserve memory while it runs). Optional.
+	UnitArgs func(id int64, kit, dir string) []string
+	// MCP adjusts the MCP servers a job gets (add one, rename one). Optional.
+	MCP func(id int64, kit string, servers map[string]any)
 
-	kits map[string]tools.Kit
+	kitsMu sync.Mutex
+	kits   map[string]tools.Kit
 
 	sem       chan struct{}
 	mu        sync.Mutex
@@ -52,7 +58,7 @@ const progressEvery = 30 * time.Minute // a running job's progress note
 
 const localJobBrief = "You are running on a local model, not Claude: smaller and slower. Keep each step simple and concrete, check every result before moving on, and never put a long file or script inside one tool call (write it in pieces). If the task is beyond what you can do reliably, say so in your report instead of guessing."
 
-func unitName(id int64) string { return fmt.Sprintf("exo-job-%d", id) }
+func (r *Runner) unitName(id int64) string { return fmt.Sprintf("%s-job-%d", r.Cfg.Slug(), id) }
 
 func New(cfg *config.Config, st *store.Store) *Runner {
 	r := &Runner{Cfg: cfg, Store: st, sem: make(chan struct{}, max(1, cfg.MaxJobs)),
@@ -124,6 +130,8 @@ func loadKits(path string) map[string]tools.Kit {
 
 // Kits lists the configured specialist kits, by name.
 func (r *Runner) Kits() []tools.Kit {
+	r.kitsMu.Lock()
+	defer r.kitsMu.Unlock()
 	var out []tools.Kit
 	for _, k := range r.kits {
 		out = append(out, k)
@@ -132,9 +140,20 @@ func (r *Runner) Kits() []tools.Kit {
 	return out
 }
 
+// kit returns a kit from kits.json, read fresh so edits apply to the next job.
+func (r *Runner) kit(name string) (tools.Kit, bool) {
+	r.kitsMu.Lock()
+	defer r.kitsMu.Unlock()
+	if fresh := loadKits(r.Cfg.Path("kits.json")); len(fresh) > 0 {
+		r.kits = fresh
+	}
+	k, ok := r.kits[name]
+	return k, ok
+}
+
 // StartKit runs a job with a specialist kit: only that kit's tools are loaded.
 func (r *Runner) StartKit(person, channel, chat, task, dir, kit string) (int64, error) {
-	if _, ok := r.kits[kit]; !ok && kit != "general" {
+	if _, ok := r.kit(kit); !ok && kit != "general" {
 		return 0, fmt.Errorf("unknown kit %q", kit)
 	}
 	task = strings.TrimSpace(task)
@@ -191,10 +210,11 @@ func (r *Runner) run(ctx context.Context, id int64, person, channel, chat, task,
 	base := r.Cfg.Path("jobs", fmt.Sprint(id))
 	logPath := base + ".jsonl"
 	mcpCfg, _ := json.Marshal(map[string]any{"mcpServers": r.mcpServers(id, kit)})
+	k, _ := r.kit(kit)
 	files := map[string]string{
 		base + ".mcp.json": string(mcpCfg), // carries exo's MCP token: 0600, never on a command line
 		base + ".prompt":   fmt.Sprintf("Job #%d from %s, sent via %s.\n\n%s", id, person, r.Cfg.Name, task),
-		base + ".brief":    strings.TrimSpace(r.Brief() + "\n\n" + r.kits[kit].Brief),
+		base + ".brief":    strings.TrimSpace(r.Brief() + "\n\n" + k.Brief),
 	}
 	if local {
 		files[base+".brief"] += "\n\n" + localJobBrief
@@ -217,8 +237,11 @@ func (r *Runner) run(ctx context.Context, id int64, person, channel, chat, task,
 	}
 	r.Store.DB.Exec(`UPDATE jobs SET status='running', started=?, log_path=?, brain=? WHERE id=?`, start.Unix(), logPath, brain, id)
 	home := u.HomeDir
-	args := []string{"-n", "systemd-run", "--unit=" + unitName(id), "--collect", "--quiet",
+	args := []string{"-n", "systemd-run", "--unit=" + r.unitName(id), "--collect", "--quiet",
 		"--uid=" + u.Uid, "--gid=" + u.Gid, "--working-directory=" + dir}
+	if r.UnitArgs != nil {
+		args = append(args, r.UnitArgs(id, kit, dir)...)
+	}
 	model := []string{"--model", r.Cfg.Model, "--effort", r.Cfg.Effort}
 	if ag := r.Cfg.Agents(); ag != "" {
 		model = append(model, "--agents", ag)
@@ -325,7 +348,7 @@ func (r *Runner) watch(id int64, person, channel, chat, kit string, start time.T
 	}
 	for {
 		scan()
-		out, _ := exec.Command("systemctl", "is-active", unitName(id)).Output()
+		out, _ := exec.Command("systemctl", "is-active", r.unitName(id)).Output()
 		if s := strings.TrimSpace(string(out)); s != "active" && s != "activating" && s != "deactivating" {
 			break
 		}
@@ -373,14 +396,17 @@ func lastLines(s string, n int) string {
 // (send_file), plus the kit's own server from kits.json.
 func (r *Runner) mcpServers(id int64, kit string) map[string]any {
 	servers := map[string]any{}
-	if k, ok := r.kits[kit]; ok && k.MCP != nil { // a specialist kit brings only its own server
+	if k, ok := r.kit(kit); ok && k.MCP != nil { // a specialist kit brings only its own server
 		servers[kit] = k.MCP
 	}
 	if r.Cfg.NotesMCP != "" {
 		servers["notes"] = map[string]any{"type": "http", "url": r.Cfg.NotesMCP}
 	}
-	servers["exo"] = map[string]any{"type": "http", "url": fmt.Sprintf("http://%s/mcp/job/%d", r.Cfg.MCPAddr, id),
+	servers[r.Cfg.Slug()] = map[string]any{"type": "http", "url": fmt.Sprintf("http://%s/mcp/job/%d", r.Cfg.MCPAddr, id),
 		"headers": map[string]string{"Authorization": "Bearer " + r.Cfg.MCPToken}}
+	if r.MCP != nil {
+		r.MCP(id, kit, servers)
+	}
 	return servers
 }
 
@@ -419,7 +445,7 @@ func (r *Runner) Cancel(person string, id int64) error {
 	case queued:
 		c()
 	case status == "running":
-		if out, err := exec.Command("sudo", "-n", "systemctl", "stop", unitName(id)).CombinedOutput(); err != nil {
+		if out, err := exec.Command("sudo", "-n", "systemctl", "stop", r.unitName(id)).CombinedOutput(); err != nil {
 			return fmt.Errorf("couldn't stop job #%d: %v %s", id, err, out)
 		}
 	default:
