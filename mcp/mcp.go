@@ -7,6 +7,7 @@ package mcp
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
@@ -38,6 +39,7 @@ type rpcErr struct {
 // ---- server ----
 
 type Server struct {
+	Name     string // reported in initialize; default "exo"
 	Token    string
 	Registry *tools.Registry
 	Lookup   func(key string) *tools.Ctx // "turn:12", "browse:12", "job:3"
@@ -99,7 +101,7 @@ func (s *Server) dispatch(ctx context.Context, tc *tools.Ctx, req *rpcReq) (any,
 		return map[string]any{
 			"protocolVersion": p.ProtocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "exo", "version": "1"},
+			"serverInfo":      map[string]any{"name": cmp.Or(s.Name, "exo"), "version": "1"},
 		}, nil
 	case "ping":
 		return map[string]any{}, nil

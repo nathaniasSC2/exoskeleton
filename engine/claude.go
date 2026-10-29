@@ -24,7 +24,8 @@ type Claude struct {
 	EngineName         string // defaults to "claude"
 	Bin, Model, Effort string
 	MCPBase, MCPToken  string // exo's own MCP server
-	Agents             string // --agents JSON (the "opus" sub-agent); used when the turn allows the Agent tool
+	MCPName            string // its name in Claude Code's config (tools are mcp__<name>__*); default "exo"
+	Agents             string // --agents JSON (the "deep" sub-agent); used when the turn allows the Agent tool
 	WorkDir            string
 	OnLimit            func(Limit)
 }
@@ -34,6 +35,13 @@ func (c *Claude) Name() string {
 		return c.EngineName
 	}
 	return "claude"
+}
+
+func (c *Claude) mcpName() string {
+	if c.MCPName != "" {
+		return c.MCPName
+	}
+	return "exo"
 }
 
 // args builds the CLI flags. mcpPath selects exo's toolset ("12" for a chat
@@ -53,7 +61,7 @@ func (c *Claude) args(req *Request, model, mcpPath string) []string {
 		a = append(a, "--agents", c.Agents)
 	}
 	if mcpPath != "" {
-		cfg, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{"exo": map[string]any{
+		cfg, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{c.mcpName(): map[string]any{
 			"type": "http", "url": c.MCPBase + "/mcp/" + mcpPath,
 			"headers": map[string]string{"Authorization": "Bearer " + c.MCPToken}}}})
 		a = append(a, "--mcp-config", string(cfg))
@@ -187,7 +195,7 @@ func (c *Claude) event(ev map[string]any, res *Result, trace func(kind, name, bo
 			case "text":
 				trace("text", "", fmt.Sprint(blk["text"]))
 			case "tool_use":
-				name := strings.TrimPrefix(fmt.Sprint(blk["name"]), "mcp__exo__")
+				name := strings.TrimPrefix(fmt.Sprint(blk["name"]), "mcp__"+c.mcpName()+"__")
 				in, _ := json.Marshal(blk["input"])
 				res.Tools = append(res.Tools, name)
 				trace("tool_call", name, string(in))

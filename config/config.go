@@ -1,6 +1,10 @@
 // Package config reads exo's settings from the environment, filled from an
 // env file (EXO_ENV_FILE, default /etc/exo/exo.env), and the people it
 // answers from a JSON file (EXO_PEOPLE, default <data>/people.json).
+//
+// A deployment built on exo can run under its own Brand: its own env prefix,
+// defaults, and the short name used for the database, the MCP server, job
+// units and backups.
 package config
 
 import (
@@ -15,14 +19,32 @@ import (
 
 // Person is someone the assistant answers. Messages from anyone else are dropped.
 type Person struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Admin    bool   `json:"admin"`   // server tools, notes, jobs
-	Discord  string `json:"discord"` // Discord user ID
-	HomeChat string `json:"home"`    // where unsolicited messages go, e.g. "discord"
+	ID       string              `json:"id"`
+	Name     string              `json:"name"`
+	Admin    bool                `json:"admin"`             // server tools, notes, jobs
+	Discord  string              `json:"discord"`           // Discord user ID
+	HomeChat string              `json:"home"`              // channel unsolicited messages go to, e.g. "discord"
+	Handles  map[string][]string `json:"handles,omitempty"` // ids on other channels: channel -> ids
+	Extra    map[string]string   `json:"extra,omitempty"`   // settings for add-on channels and tools
 }
 
+// Brand is a deployment's identity. Prefix names its env variables
+// (<Prefix>_DATA, ...); Slug names <slug>.db, the MCP server (tools show up
+// as mcp__<slug>__*), job units (<slug>-job-<id>) and backups.
+type Brand struct {
+	Prefix, Slug string
+	// Defaults replace exo's built-in defaults, keyed without the prefix
+	// ("DATA", "TZ", ...). The environment still wins.
+	Defaults map[string]string
+	// People, if set, builds the people list instead of reading people.json.
+	People func(c *Config) ([]*Person, error)
+}
+
+// Exo is the default brand.
+var Exo = Brand{Prefix: "EXO", Slug: "exo"}
+
 type Config struct {
+	Brand   Brand
 	Name    string // what the assistant is called in prompts and notices
 	DataDir string
 	Loc     *time.Location
@@ -59,6 +81,7 @@ type Config struct {
 	Shadow         string // shadow variants run on the local model after each Claude chat turn, e.g. "fast,think"; "" = off
 
 	Transcribe string // command that prints a transcript of the audio file given as its last argument ("" = off)
+	BackupDir  string // nightly database copies, 14 kept (default <data>/backups)
 
 	NotesMCP           string // MCP server for long-term notes (Basic Memory or anything with search_notes/read_note)
 	NotesSearch        string // search_type for note hints: vector (default) | hybrid | text
@@ -68,16 +91,21 @@ type Config struct {
 	People []*Person
 }
 
-func env(k, def string) string {
+// Env reads a variable, or def when it's unset or blank.
+func Env(k, def string) string {
 	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 		return v
 	}
 	return def
 }
 
-func envBool(k string, def bool) bool {
-	v := strings.ToLower(env(k, ""))
-	switch v {
+// EnvBool reads 1/true/yes/on or 0/false/no/off, else def.
+func EnvBool(k string, def bool) bool {
+	return parseBool(Env(k, ""), def)
+}
+
+func parseBool(v string, def bool) bool {
+	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":
 		return true
 	case "0", "false", "no", "off":
@@ -86,17 +114,18 @@ func envBool(k string, def bool) bool {
 	return def
 }
 
-func envInt(k string, def int) int {
-	if n, err := strconv.Atoi(env(k, "")); err == nil {
+// EnvInt reads an integer, else def.
+func EnvInt(k string, def int) int {
+	if n, err := strconv.Atoi(Env(k, "")); err == nil {
 		return n
 	}
 	return def
 }
 
-// loadEnvFile fills unset variables from the env file, so CLI subcommands
+// LoadEnvFile fills unset variables from the env file, so CLI subcommands
 // run by hand see the same settings as the unit (systemd's EnvironmentFile
 // syntax: KEY=VALUE per line, # comments).
-func loadEnvFile(path string) {
+func LoadEnvFile(path string) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -112,61 +141,106 @@ func loadEnvFile(path string) {
 	}
 }
 
-func Load() (*Config, error) {
-	if os.Getenv("EXO_MCP_TOKEN") == "" {
-		loadEnvFile(env("EXO_ENV_FILE", "/etc/exo/exo.env"))
+// Load reads the settings under the default brand.
+func Load() (*Config, error) { return LoadBrand(Exo) }
+
+// LoadBrand reads the settings for a brand: <Prefix>_* variables, filled from
+// <Prefix>_ENV_FILE (default /etc/<slug>/<slug>.env).
+func LoadBrand(b Brand) (*Config, error) {
+	k := func(name string) string { return b.Prefix + "_" + name }
+	if os.Getenv(k("MCP_TOKEN")) == "" {
+		LoadEnvFile(Env(k("ENV_FILE"), "/etc/"+b.Slug+"/"+b.Slug+".env"))
 	}
-	loc, err := time.LoadLocation(env("EXO_TZ", "Local"))
+	env := func(name, def string) string {
+		if d, ok := b.Defaults[name]; ok {
+			def = d
+		}
+		return Env(k(name), def)
+	}
+	envBool := func(name string, def bool) bool {
+		return parseBool(env(name, ""), def)
+	}
+	envInt := func(name string, def int) int {
+		if n, err := strconv.Atoi(env(name, "")); err == nil {
+			return n
+		}
+		return def
+	}
+	loc, err := time.LoadLocation(env("TZ", "Local"))
 	if err != nil {
 		return nil, err
 	}
 	home, _ := os.UserHomeDir()
 	c := &Config{
-		Name:            env("EXO_NAME", "Exo"),
-		DataDir:         env("EXO_DATA", "/var/lib/exo"),
+		Brand:           b,
+		Name:            env("NAME", "Exo"),
+		DataDir:         env("DATA", "/var/lib/"+b.Slug),
 		Loc:             loc,
-		DashAddr:        env("EXO_DASH_ADDR", "127.0.0.1:8656"),
-		MCPAddr:         env("EXO_MCP_ADDR", "127.0.0.1:8655"),
-		MCPToken:        env("EXO_MCP_TOKEN", ""),
-		DryRun:          envBool("EXO_DRY_RUN", true),
-		ScheduleEnabled: envBool("EXO_SCHEDULE", false),
-		Failover:        env("EXO_FAILOVER", "ask"),
-		DiscordToken:    env("EXO_DISCORD_TOKEN", ""),
-		DiscordEnabled:  envBool("EXO_DISCORD", false),
-		ClaudeBin:       env("EXO_CLAUDE_BIN", filepath.Join(home, ".local/bin/claude")),
-		ClaudeEnv:       env("EXO_CLAUDE_ENV", "/etc/exo/claude.env"),
-		Model:           env("EXO_MODEL", "claude-sonnet-5-5"),
-		Effort:          env("EXO_EFFORT", "medium"),
-		DeepModel:       env("EXO_DEEP_MODEL", "claude-opus-5-5"),
-		ProbeModel:      env("EXO_PROBE_MODEL", "claude-haiku-5-5"),
-		TurnTimeout:     time.Duration(envInt("EXO_TURN_TIMEOUT_S", 420)) * time.Second,
-		LocalTimeout:    time.Duration(envInt("EXO_LOCAL_TIMEOUT_S", 600)) * time.Second,
-		JobTimeout:      time.Duration(envInt("EXO_JOB_TIMEOUT_M", 90)) * time.Minute,
-		CheckIn:         time.Duration(envInt("EXO_CHECKIN_S", 180)) * time.Second,
-		MaxJobs:         envInt("EXO_MAX_JOBS", 2),
-		LocalURL:        strings.TrimRight(env("EXO_LOCAL_URL", "http://127.0.0.1:8080/v1"), "/"),
-		LocalModel:      env("EXO_LOCAL_MODEL", "local"),
-		LocalStart:      env("EXO_LOCAL_START", ""),
-		LocalStop:       env("EXO_LOCAL_STOP", ""),
-		LocalVariant:    env("EXO_LOCAL_VARIANT", "fast"),
-		LocalMaxTokens:  envInt("EXO_LOCAL_MAX_TOKENS", 2048),
-		Shadow:          env("EXO_SHADOW", ""),
-		Transcribe:      env("EXO_TRANSCRIBE", ""),
-		NotesMCP:        env("EXO_NOTES_MCP", ""),
-		NotesSearch:     env("EXO_NOTES_SEARCH", "vector"),
-		Heartbeat:       env("EXO_HEARTBEAT", ""),
-		QuietFrom:       envInt("EXO_QUIET_FROM", 22),
-		QuietTo:         envInt("EXO_QUIET_TO", 7),
+		DashAddr:        env("DASH_ADDR", "127.0.0.1:8656"),
+		MCPAddr:         env("MCP_ADDR", "127.0.0.1:8655"),
+		MCPToken:        env("MCP_TOKEN", ""),
+		DryRun:          envBool("DRY_RUN", true),
+		ScheduleEnabled: envBool("SCHEDULE", false),
+		Failover:        env("FAILOVER", "ask"),
+		DiscordToken:    env("DISCORD_TOKEN", ""),
+		DiscordEnabled:  envBool("DISCORD", false),
+		ClaudeBin:       env("CLAUDE_BIN", filepath.Join(home, ".local/bin/claude")),
+		ClaudeEnv:       env("CLAUDE_ENV", "/etc/"+b.Slug+"/claude.env"),
+		Model:           env("MODEL", "claude-sonnet-5-5"),
+		Effort:          env("EFFORT", "medium"),
+		DeepModel:       env("DEEP_MODEL", "claude-opus-5-5"),
+		ProbeModel:      env("PROBE_MODEL", "claude-haiku-5-5"),
+		TurnTimeout:     time.Duration(envInt("TURN_TIMEOUT_S", 420)) * time.Second,
+		LocalTimeout:    time.Duration(envInt("LOCAL_TIMEOUT_S", 600)) * time.Second,
+		JobTimeout:      time.Duration(envInt("JOB_TIMEOUT_M", 90)) * time.Minute,
+		CheckIn:         time.Duration(envInt("CHECKIN_S", 180)) * time.Second,
+		MaxJobs:         envInt("MAX_JOBS", 2),
+		LocalURL:        strings.TrimRight(env("LOCAL_URL", "http://127.0.0.1:8080/v1"), "/"),
+		LocalModel:      env("LOCAL_MODEL", "local"),
+		LocalStart:      env("LOCAL_START", ""),
+		LocalStop:       env("LOCAL_STOP", ""),
+		LocalVariant:    env("LOCAL_VARIANT", "fast"),
+		LocalMaxTokens:  envInt("LOCAL_MAX_TOKENS", 2048),
+		Shadow:          env("SHADOW", ""),
+		Transcribe:      env("TRANSCRIBE", ""),
+		NotesMCP:        env("NOTES_MCP", ""),
+		NotesSearch:     env("NOTES_SEARCH", "vector"),
+		Heartbeat:       env("HEARTBEAT", ""),
+		QuietFrom:       envInt("QUIET_FROM", 22),
+		QuietTo:         envInt("QUIET_TO", 7),
 	}
+	c.BackupDir = env("BACKUP_DIR", c.Path("backups"))
 	if c.MCPToken == "" {
-		return nil, fmt.Errorf("EXO_MCP_TOKEN is required")
+		return nil, fmt.Errorf("%s is required", k("MCP_TOKEN"))
 	}
-	people, err := LoadPeople(env("EXO_PEOPLE", c.Path("people.json")))
+	var people []*Person
+	if b.People != nil {
+		people, err = b.People(c)
+	} else {
+		people, err = LoadPeople(env("PEOPLE", c.Path("people.json")))
+	}
 	if err != nil {
 		return nil, err
 	}
 	c.People = people
 	return c, nil
+}
+
+// Env reads one of the brand's own variables (<Prefix>_<name>), for settings
+// an add-on defines; the brand's Defaults apply.
+func (c *Config) Env(name, def string) string {
+	if d, ok := c.Brand.Defaults[name]; ok {
+		def = d
+	}
+	return Env(c.Brand.Prefix+"_"+name, def)
+}
+
+// Slug is the brand's short name ("exo" by default).
+func (c *Config) Slug() string {
+	if c.Brand.Slug == "" {
+		return "exo"
+	}
+	return c.Brand.Slug
 }
 
 // LoadPeople reads the people file: a JSON list of Person.
@@ -200,6 +274,22 @@ func (c *Config) ByDiscord(id string) *Person {
 	for _, p := range c.People {
 		if p.Discord != "" && p.Discord == id {
 			return p
+		}
+	}
+	return nil
+}
+
+// ByHandle finds the person with this id on a channel (Person.Handles).
+func (c *Config) ByHandle(channel, id string) *Person {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	for _, p := range c.People {
+		for _, h := range p.Handles[channel] {
+			if strings.EqualFold(h, id) {
+				return p
+			}
 		}
 	}
 	return nil

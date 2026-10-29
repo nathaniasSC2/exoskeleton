@@ -208,7 +208,7 @@ func (s *Scheduler) run(e Entry) {
 			out = out[:8000] + "…"
 		}
 		if exit != 0 && out == "" {
-			out = fmt.Sprintf("%s failed (exit %d); see journalctl -u exo", e.Name, exit)
+			out = fmt.Sprintf("%s failed (exit %d); see journalctl -u %s", e.Name, exit, s.Cfg.Slug())
 		}
 	}
 	delivered := 0
