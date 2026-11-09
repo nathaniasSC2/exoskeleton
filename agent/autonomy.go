@@ -266,6 +266,9 @@ func (a *Agent) Heartbeat(ctx context.Context) (string, error) {
 			b.WriteString("Already sent him unprompted today (don't repeat):\n" + strings.Join(said, "\n") + "\n\n")
 		}
 	}
+	if past := recentHeartbeatTexts(a.Store, p.ID, midnight-3*86400, midnight, a.Cfg.Loc, a.Cfg.QuietFrom, a.Cfg.QuietTo); len(past) > 0 {
+		b.WriteString("Your own texts to him on the three days before today (vary what you bring up):\n" + strings.Join(past, "\n") + "\n\n")
+	}
 	if in := a.Store.Get("interests:" + p.ID); in != "" {
 		b.WriteString("Current interests list:\n" + in + "\n\n")
 	} else {
@@ -298,6 +301,31 @@ func (a *Agent) Heartbeat(ctx context.Context) (string, error) {
 	}
 	a.NotifyFiles(p.ID, ch, chat, msg, out.files)
 	return "messaged: " + msg + "\n" + log, nil
+}
+
+// recentHeartbeatTexts lists what the heartbeat itself texted between from and
+// to (unix), oldest first, so check-ins can vary from day to day instead of
+// repeating yesterday's stretch or question. A MESSAGE written in quiet hours was
+// never sent, so it's left out.
+func recentHeartbeatTexts(st *store.Store, person string, from, to int64, loc *time.Location, quietFrom, quietTo int) []string {
+	rows, err := st.DB.Query(`SELECT started,COALESCE(reply,'') FROM turns WHERE person=? AND kind='heartbeat' AND started>=? AND started<? ORDER BY id`, person, from, to)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var ts int64
+		var r string
+		if rows.Scan(&ts, &r) != nil {
+			continue
+		}
+		at := time.Unix(ts, 0).In(loc)
+		if m, _ := splitHeartbeat(r); m != "" && !inQuiet(at.Hour(), quietFrom, quietTo) {
+			out = append(out, fmt.Sprintf("- %s: %s", at.Format("Mon 3:04PM"), oneLine(m, 200)))
+		}
+	}
+	return out
 }
 
 // inQuiet reports whether hour h falls in [from, to), wrapping midnight.
