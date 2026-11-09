@@ -266,6 +266,12 @@ func (a *Agent) Heartbeat(ctx context.Context) (string, error) {
 			b.WriteString("Already sent him unprompted today (don't repeat):\n" + strings.Join(said, "\n") + "\n\n")
 		}
 	}
+	// Its own texts today, apart from the automated reports above, so it can pace check-ins.
+	if mine := recentHeartbeatTexts(a.Store, p.ID, midnight, now.Unix()+1, a.Cfg.Loc, a.Cfg.QuietFrom, a.Cfg.QuietTo); len(mine) > 0 {
+		b.WriteString("Your own texts to him today, from earlier heartbeats:\n" + strings.Join(mine, "\n") + "\n\n")
+	} else {
+		b.WriteString("Your own texts to him today, from earlier heartbeats: none yet.\n\n")
+	}
 	if past := recentHeartbeatTexts(a.Store, p.ID, midnight-3*86400, midnight, a.Cfg.Loc, a.Cfg.QuietFrom, a.Cfg.QuietTo); len(past) > 0 {
 		b.WriteString("Your own texts to him on the three days before today (vary what you bring up):\n" + strings.Join(past, "\n") + "\n\n")
 	}
