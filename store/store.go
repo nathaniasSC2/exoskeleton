@@ -130,6 +130,14 @@ func (s *Store) Get(k string) string {
 	return v
 }
 
+// GetAt is Get plus the unix time the value was last set (0 when unset).
+func (s *Store) GetAt(k string) (string, int64) {
+	var v string
+	var ts int64
+	s.DB.QueryRow(`SELECT v, ts FROM kv WHERE k=?`, k).Scan(&v, &ts)
+	return v, ts
+}
+
 func (s *Store) Set(k, v string) {
 	s.DB.Exec(`INSERT INTO kv(k,v,ts) VALUES(?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, ts=excluded.ts`, k, v, now())
 }

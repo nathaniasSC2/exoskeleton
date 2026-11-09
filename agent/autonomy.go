@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -142,6 +143,32 @@ func (a *Agent) RunRoutine(ctx context.Context, id int64) (string, error) {
 
 // ---- heartbeat ----
 
+// governHeartbeat says whether the saved plan-usage reading (the kv "limit"
+// value, set at unix time at) should hold the heartbeat back. Only a Claude
+// call refreshes that reading, and a skipped heartbeat makes none, so taking it
+// at face value let one reading keep every heartbeat off for hours: on
+// 2026-11-08 a five-hour reading of 80% at noon skipped every heartbeat until
+// the next morning, and the evening patch decision with them. So a reading
+// holds the heartbeat back at most once (skippedOn is the at of the reading
+// that last did), and never after its window has reset. While usage really is
+// high, each fresh reading still buys one skip.
+func governHeartbeat(v string, at int64, skippedOn string, now int64) (bool, string) {
+	var l engine.Limit
+	if v == "" || json.Unmarshal([]byte(v), &l) != nil {
+		return false, ""
+	}
+	if l.ResetsAt > 0 && now >= l.ResetsAt {
+		return false, ""
+	}
+	if skippedOn != "" && skippedOn == strconv.FormatInt(at, 10) {
+		return false, ""
+	}
+	if l.FiveHour >= 0.8 || l.SevenDay >= 0.85 {
+		return true, fmt.Sprintf("skipped: plan usage high (5h %.0f%%, 7d %.0f%%)", l.FiveHour*100, l.SevenDay*100)
+	}
+	return false, ""
+}
+
 // Heartbeat reviews what's happened since the last one: learns (facts, notes,
 // the interests list), follows up on what the admin cares about, takes only
 // safe actions, and messages them at most once, only when it's worth it.
@@ -155,9 +182,12 @@ func (a *Agent) Heartbeat(ctx context.Context) (string, error) {
 	}
 	// Governor: a subscription is usually shared with the person's own Claude
 	// Code work, so an hourly heartbeat backs off when usage runs hot.
-	var l engine.Limit
-	if a.mode() == "claude" && json.Unmarshal([]byte(a.Store.Get("limit")), &l) == nil && (l.FiveHour >= 0.8 || l.SevenDay >= 0.85) {
-		return fmt.Sprintf("skipped: plan usage high (5h %.0f%%, 7d %.0f%%)", l.FiveHour*100, l.SevenDay*100), nil
+	if a.mode() == "claude" {
+		v, at := a.Store.GetAt("limit")
+		if skip, why := governHeartbeat(v, at, a.Store.Get("heartbeat:skipped-on"), time.Now().Unix()); skip {
+			a.Store.Set("heartbeat:skipped-on", strconv.FormatInt(at, 10))
+			return why, nil
+		}
 	}
 	now := time.Now()
 	since := now.Add(-24 * time.Hour).Unix()
