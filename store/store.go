@@ -588,6 +588,11 @@ func (s *Store) DueReminders() []Reminder {
 	return due
 }
 
+// RetryReminder puts a reminder that failed to deliver back to pending, later.
+func (s *Store) RetryReminder(id int64, after time.Duration) {
+	s.DB.Exec(`UPDATE reminders SET status='pending', at=? WHERE id=?`, now()+int64(after.Seconds()), id)
+}
+
 func (s *Store) CancelReminder(person string, id int64) bool {
 	res, _ := s.DB.Exec(`UPDATE reminders SET status='cancelled' WHERE id=? AND person=? AND status='pending'`, id, person)
 	n, _ := res.RowsAffected()

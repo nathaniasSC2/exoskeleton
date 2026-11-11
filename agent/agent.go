@@ -474,12 +474,15 @@ func (a *Agent) typing(ctx context.Context, ch, chat string, replay bool) func()
 	return cancel
 }
 
-func (a *Agent) deliver(ctx context.Context, p *config.Person, ch, chat string, turn int64, text string, files []string) {
+// deliver reports whether the text went out (files that fail are reported to the person instead).
+func (a *Agent) deliver(ctx context.Context, p *config.Person, ch, chat string, turn int64, text string, files []string) bool {
 	s := a.Senders[ch]
 	if s == nil {
-		slog.Warn("no sender for channel", "channel", ch)
-		return
+		slog.Error("no sender for channel", "channel", ch)
+		a.Store.Trace(turn, 900, "error", "send", "no sender for channel "+ch)
+		return false
 	}
+	ok := true
 	dctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	if strings.TrimSpace(text) != "" {
@@ -487,6 +490,7 @@ func (a *Agent) deliver(ctx context.Context, p *config.Person, ch, chat string, 
 		if err != nil {
 			slog.Error("send", "channel", ch, "err", err)
 			a.Store.Trace(turn, 900, "error", "send", err.Error())
+			ok = false
 		}
 		a.Store.AddOutGUID(turn, guid)
 	}
@@ -509,6 +513,7 @@ func (a *Agent) deliver(ctx context.Context, p *config.Person, ch, chat string, 
 		}
 		a.Store.AddOutGUID(turn, guid)
 	}
+	return ok
 }
 
 // Notify sends something the assistant says unprompted (job reports, scheduled
@@ -523,19 +528,29 @@ func (a *Agent) NotifyFiles(person, ch, chat, text string, files []string) {
 }
 
 // notify with kind "system" keeps harness chatter (/status, /help) out of the model's context.
-func (a *Agent) notify(person, ch, chat, kind, text string, files []string) {
+func (a *Agent) notify(person, ch, chat, kind, text string, files []string) bool {
 	p := a.Cfg.Person(person)
 	if p == nil {
-		return
+		return false
+	}
+	// Channels with no text sender of their own (a voice call) fall back to the person's Discord DM.
+	if ch != "console" && a.Senders[ch] == nil {
+		if c := a.chans["discord"]; c != nil && c.ChatFor != nil && a.Senders["discord"] != nil {
+			if dm, err := c.ChatFor(p); err == nil && dm != "" {
+				ch, chat = "discord", dm
+			} else {
+				slog.Error("discord fallback", "channel", ch, "err", err)
+			}
+		}
 	}
 	id := a.Store.AddNotice(person, ch, chat, kind, text)
 	if len(files) > 0 {
 		a.Store.DB.Exec(`UPDATE turns SET attachments=? WHERE id=?`, strings.Join(files, "\n"), id)
 	}
 	if ch == "console" {
-		return
+		return true
 	}
-	a.deliver(context.Background(), p, ch, chat, id, text, files)
+	return a.deliver(context.Background(), p, ch, chat, id, text, files)
 }
 
 // DeliverTarget resolves "<channel>:<person>" (e.g. "discord:alex") for scheduled jobs.
@@ -591,7 +606,10 @@ func (a *Agent) reminderLoop(ctx context.Context) {
 		case <-t.C:
 		}
 		for _, r := range a.Store.DueReminders() {
-			a.Notify(r.Person, r.Channel, r.Chat, "⏰ "+r.Text)
+			if !a.notify(r.Person, r.Channel, r.Chat, "notice", "⏰ "+r.Text, nil) {
+				slog.Error("reminder not delivered; will retry", "id", r.ID, "channel", r.Channel)
+				a.Store.RetryReminder(r.ID, 5*time.Minute)
+			}
 		}
 	}
 }
