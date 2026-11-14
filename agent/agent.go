@@ -367,7 +367,7 @@ func (a *Agent) runTurnOpts(ctx context.Context, p *config.Person, id int64, ch,
 	seq := 0
 	var history []engine.Msg
 	if !replay && !o.noRecent {
-		history = a.history(p, id)
+		history = a.history(p, id, ch)
 	}
 	req := &engine.Request{TurnID: id, System: system, History: history, User: blocks, BuiltIns: a.builtIns(local), Model: o.model, Effort: a.effortFor(eng, o),
 		Trace: func(kind, name, body string) {

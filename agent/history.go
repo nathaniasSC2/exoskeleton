@@ -11,7 +11,44 @@ import (
 	"github.com/nathaniasSC2/exoskeleton/store"
 )
 
-// history is the recent conversation as chat messages, oldest first.
+// Caps size the recent-conversation window: how much of each message is kept,
+// and how far the window grows before it jumps.
+type Caps struct {
+	Input, Reply int // characters kept of each message from the person / each reply
+	Chars, Turns int // the window's size limits
+}
+
+var defaultCaps = Caps{Input: inputClip, Reply: replyClip, Chars: recentChars, Turns: recentTurns}
+
+// ChannelCaps gives a channel its own window: its turns are clipped by its
+// Input/Reply, and while the conversation is on it (the turn being answered
+// is) the window may grow to its Chars/Turns. A voice call wants more than
+// texting does: a two-minute spoken thought loses its point at 500
+// characters. Zero fields keep the defaults. Set before Run.
+var ChannelCaps = map[string]Caps{}
+
+func capsFor(ch string) Caps {
+	c, ok := ChannelCaps[ch]
+	if !ok {
+		return defaultCaps
+	}
+	if c.Input == 0 {
+		c.Input = inputClip
+	}
+	if c.Reply == 0 {
+		c.Reply = replyClip
+	}
+	if c.Chars == 0 {
+		c.Chars = recentChars
+	}
+	if c.Turns == 0 {
+		c.Turns = recentTurns
+	}
+	return c
+}
+
+// history is the recent conversation as chat messages, oldest first. ch is
+// the channel of the turn being answered (its ChannelCaps size the window).
 //
 // The window is append-only: it starts at a stored turn id and only grows,
 // so this turn's history is last turn's history plus the newest exchange. A
@@ -19,7 +56,7 @@ import (
 // everything up to the newest exchange instead of reprocessing it. When the
 // window outgrows its caps (turns, characters, age) it jumps forward once,
 // keeping the newest half, rather than sliding a little every turn.
-func (a *Agent) history(p *config.Person, turnID int64) []engine.Msg {
+func (a *Agent) history(p *config.Person, turnID int64, ch string) []engine.Msg {
 	key := "histstart:" + p.ID
 	start, _ := strconv.ParseInt(a.Store.Get(key), 10, 64)
 	turns, err := a.Store.TurnsFrom(p.ID, start, 400)
@@ -32,8 +69,9 @@ func (a *Agent) history(p *config.Person, turnID int64) []engine.Msg {
 			ts = append(ts, t)
 		}
 	}
-	if windowOver(ts) {
-		ts = keepNewest(ts)
+	w := capsFor(ch)
+	if windowOver(ts, w) {
+		ts = keepNewest(ts, w)
 		if len(ts) > 0 {
 			a.Store.Set(key, fmt.Sprint(ts[0].ID))
 		}
@@ -47,19 +85,21 @@ func (a *Agent) history(p *config.Person, turnID int64) []engine.Msg {
 	return out
 }
 
+// turnChars is what a turn costs the window, clipped by its own channel's caps.
 func turnChars(t *store.Turn) int {
-	return min(len(t.Input), inputClip) + min(len(t.Reply), replyClip) + len(t.Tools) + 40
+	c := capsFor(t.Channel)
+	return min(len(t.Input), c.Input) + min(len(t.Reply), c.Reply) + len(t.Tools) + 40
 }
 
-func windowOver(ts []*store.Turn) bool {
-	if len(ts) > recentTurns {
+func windowOver(ts []*store.Turn, w Caps) bool {
+	if len(ts) > w.Turns {
 		return true
 	}
 	n := 0
 	for _, t := range ts {
 		n += turnChars(t)
 	}
-	if n > recentChars {
+	if n > w.Chars {
 		return true
 	}
 	return len(ts) > keepAlwaysN && time.Since(time.Unix(ts[0].Started, 0)) > recentMaxAge
@@ -67,12 +107,12 @@ func windowOver(ts []*store.Turn) bool {
 
 // keepNewest is the jump: the newest half of the caps, the last keepAlwaysN
 // turns always included whatever their age.
-func keepNewest(ts []*store.Turn) []*store.Turn {
+func keepNewest(ts []*store.Turn, w Caps) []*store.Turn {
 	kept, chars, i := 0, 0, len(ts)
 	for i > 0 {
 		t := ts[i-1]
 		c := turnChars(t)
-		if kept >= keepAlwaysN && (kept >= recentTurns/2 || chars+c > recentChars/2 || time.Since(time.Unix(t.Started, 0)) > recentMaxAge) {
+		if kept >= keepAlwaysN && (kept >= w.Turns/2 || chars+c > w.Chars/2 || time.Since(time.Unix(t.Started, 0)) > recentMaxAge) {
 			break
 		}
 		kept++
@@ -86,9 +126,11 @@ func keepNewest(ts []*store.Turn) []*store.Turn {
 // message; Line keeps the transcript format the Claude path has always used.
 func (a *Agent) historyMsgs(p *config.Person, t *store.Turn) []engine.Msg {
 	when := time.Unix(t.Started, 0).In(a.Cfg.Loc).Format("Mon Jan 2 3:04PM")
+	caps := capsFor(t.Channel)
+	replyClip := caps.Reply
 	switch t.Kind {
 	case "chat":
-		in, reply := oneLine(t.Input, inputClip), oneLine(t.Reply, replyClip)
+		in, reply := oneLine(t.Input, caps.Input), oneLine(t.Reply, replyClip)
 		user := engine.Msg{Role: "user", Text: fmt.Sprintf("[%s] %s", when, in), Line: fmt.Sprintf("[%s] %s: %s", when, p.Name, in)}
 		me := engine.Msg{Role: "assistant", Text: reply, Line: fmt.Sprintf("[%s] %s: %s", when, a.Cfg.Name, reply)}
 		if t.Tools != "" {
