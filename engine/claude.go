@@ -60,6 +60,9 @@ func (c *Claude) args(req *Request, model, mcpPath string) []string {
 	if c.Agents != "" && strings.Contains(","+req.BuiltIns+",", ",Agent,") {
 		a = append(a, "--agents", c.Agents)
 	}
+	if req.OnText != nil {
+		a = append(a, "--include-partial-messages") // stream_event lines: the text as it's written
+	}
 	if mcpPath != "" {
 		cfg, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{c.mcpName(): map[string]any{
 			"type": "http", "url": c.MCPBase + "/mcp/" + mcpPath,
@@ -129,13 +132,18 @@ func (c *Claude) run(ctx context.Context, req *Request, model, mcpPath string) *
 	stdin.Close()
 
 	var final map[string]any
+	st := &textStream{on: req.OnText}
 	rd := bufio.NewReaderSize(stdout, 1<<20)
 	for {
 		line, err := rd.ReadBytes('\n')
 		if len(bytes.TrimSpace(line)) > 0 {
 			var ev map[string]any
 			if json.Unmarshal(line, &ev) == nil {
-				c.event(ev, res, trace, &final)
+				if ev["type"] == "stream_event" {
+					st.event(ev)
+				} else {
+					c.event(ev, res, trace, &final)
+				}
 			}
 		}
 		if err != nil {
@@ -231,6 +239,34 @@ func (c *Claude) event(ev map[string]any, res *Result, trace func(kind, name, bo
 		}
 	case "result":
 		*final = ev
+	}
+}
+
+// textStream passes the main agent's text deltas to Request.OnText (with
+// --include-partial-messages). Thinking, tool input and a sub-agent's own
+// messages (parent_tool_use_id set) are not part of the reply, so they're skipped.
+type textStream struct {
+	on   func(string)
+	sent bool // some text already went out: the next text block starts a new paragraph
+}
+
+func (s *textStream) event(ev map[string]any) {
+	if s.on == nil || ev["parent_tool_use_id"] != nil {
+		return
+	}
+	e, _ := ev["event"].(map[string]any)
+	switch e["type"] {
+	case "content_block_start":
+		if b, _ := e["content_block"].(map[string]any); b["type"] == "text" && s.sent {
+			s.on("\n\n")
+		}
+	case "content_block_delta":
+		if d, _ := e["delta"].(map[string]any); d["type"] == "text_delta" {
+			if t, _ := d["text"].(string); t != "" {
+				s.sent = true
+				s.on(t)
+			}
+		}
 	}
 }
 

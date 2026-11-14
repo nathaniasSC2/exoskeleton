@@ -201,6 +201,9 @@ type Registry struct {
 	Routines     RoutineManager
 	SetInterests func(person, text string) error
 	SetLoops     func(person, text string)
+	// Send messages the person now on a text channel ("" = their Discord DM)
+	// and says where it landed (the agent's Send). nil = no send_message.
+	Send func(person, channel, text string, files []string) (string, error)
 	// Optional: a better search for the local engine's web_search (a real
 	// browser, say), and a reader for pages plain HTTP can't get (bot walls).
 	Search func(ctx context.Context, query string) (string, error)
@@ -229,6 +232,17 @@ func New(cfg *config.Config, st *store.Store, jobs Jobs, notes NotesClient) *Reg
 			Desc:     "Send a file from the server (image, .ics, pdf, ...) with your reply.",
 			Params:   map[string]any{"path": str("Absolute path on the server")},
 			Required: []string{"path"}, Run: r.sendFile},
+		{Name: "send_message", Where: "both", SideEffect: true,
+			Desc: "Message this person right now on one of their text channels, apart from your reply: links, lists, details or a file they should have in writing. " +
+				"Use it when your reply can't carry them (on a voice call, everything you say is spoken). It returns where the message was delivered; " +
+				"don't tell them it's sent until it has.",
+			Params: map[string]any{
+				"text":    str("The message, written for them to read later (links and short lists are fine)"),
+				"channel": str("Optional: discord (their DM, the default) or another text channel they use, e.g. imessage"),
+				"file":    str("Optional: absolute path of a server file to attach (admins only)"),
+			},
+			Required: []string{"text"}, Run: r.sendMessage,
+			Stub: func(*Ctx, Args) string { return "delivered (replay: nothing sent)" }},
 		{Name: "remember", Where: "both", SideEffect: true,
 			Desc:     "Save a durable fact about this person (preferences, plans, people, recurring things). Not for trivia or one-off chatter.",
 			Params:   map[string]any{"fact": str("One self-contained sentence")},
@@ -492,6 +506,27 @@ func (r *Registry) Call(ctx context.Context, c *Ctx, name string, args Args) Res
 }
 
 // ---- implementations ----
+
+func (r *Registry) sendMessage(_ context.Context, c *Ctx, a Args) Result {
+	if r.Send == nil {
+		return Result{Text: "sending isn't available here", IsError: true}
+	}
+	var files []string
+	if f := a.S("file"); f != "" {
+		if !c.Person.Admin {
+			return Result{Text: "attaching server files is for admins", IsError: true}
+		}
+		if st, err := os.Stat(f); err != nil || st.IsDir() {
+			return Result{Text: "no such file: " + f, IsError: true}
+		}
+		files = append(files, f)
+	}
+	where, err := r.Send(c.Person.ID, a.S("channel"), a.S("text"), files)
+	if err != nil {
+		return Result{Text: "not sent: " + err.Error(), IsError: true}
+	}
+	return Result{Text: where}
+}
 
 func (r *Registry) sendFile(_ context.Context, c *Ctx, a Args) Result {
 	p := filepath.Clean(a.S("path"))

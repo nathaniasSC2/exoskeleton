@@ -287,6 +287,8 @@ type TurnOpts struct {
 	LocalVariant string          // the local engine's variant for this turn ("" = configured)
 	Deny         map[string]bool // tools withheld (shadow runs too)
 	Shadow       string          // shadow variants for this turn, e.g. "fast" ("" = EXO_SHADOW's)
+	OnText       func(string)    // the reply's text as it's written, where the engine can stream it (see engine.Request)
+	Test         bool            // Task only: a dry run, side effects stubbed and nothing delivered
 }
 
 // ErrHeld is Answer's error while Claude is down and the admin hasn't picked a fallback.
@@ -309,7 +311,7 @@ func (a *Agent) Answer(ctx context.Context, person, ch, chat, input string, o Tu
 	}
 	id := a.Store.StartTurn(p.ID, ch, chat, "chat", input)
 	out := a.runTurnOpts(ctx, p, id, ch, chat, input, nil, turnOpts{system: o.System, model: o.Model, effort: o.Effort,
-		localVariant: o.LocalVariant, deny: o.Deny, shadow: o.Shadow, noCheckIn: true})
+		localVariant: o.LocalVariant, deny: o.Deny, shadow: o.Shadow, noCheckIn: true, onText: o.OnText})
 	if out.err != nil && out.err.Err != nil {
 		return "", out.err.Err
 	}
@@ -330,9 +332,10 @@ type turnOpts struct {
 	system       string          // extra system-prompt section (routine/heartbeat brief)
 	model        string          // engine overrides for this turn
 	effort       string
-	localVariant string // the local engine's variant for this turn
-	noCheckIn    bool   // no progress note (the reply isn't delivered as a message)
-	shadow       string // shadow variants instead of the configured ones
+	localVariant string       // the local engine's variant for this turn
+	noCheckIn    bool         // no progress note (the reply isn't delivered as a message)
+	shadow       string       // shadow variants instead of the configured ones
+	onText       func(string) // streamed reply text (Answer's OnText)
 }
 
 func (a *Agent) runTurn(ctx context.Context, p *config.Person, id int64, ch, chat, input string, images []string, replay bool) turnOut {
@@ -375,6 +378,10 @@ func (a *Agent) runTurnOpts(ctx context.Context, p *config.Person, id int64, ch,
 			a.Store.Trace(id, seq, kind, name, body)
 		}}
 	req.Trace("prompt", hash[:8], engine.HistoryText(history)+user)
+	streamed := false // text already went out: a retry would say it twice
+	if o.onText != nil {
+		req.OnText = func(s string) { streamed = true; o.onText(s) }
+	}
 
 	stopTyping := a.typing(ctx, ch, chat, replay)
 	start := time.Now()
@@ -388,7 +395,7 @@ func (a *Agent) runTurnOpts(ctx context.Context, p *config.Person, id int64, ch,
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	res := eng.Turn(tctx, req)
-	if res.Err != nil && (res.Kind == engine.Overloaded || res.Kind == engine.Other) && eng.Name() == "claude" && ctx.Err() == nil {
+	if res.Err != nil && (res.Kind == engine.Overloaded || res.Kind == engine.Other) && eng.Name() == "claude" && ctx.Err() == nil && !streamed {
 		req.Trace("retry", string(res.Kind), res.Err.Error())
 		time.Sleep(3 * time.Second)
 		res = eng.Turn(tctx, req)
@@ -525,6 +532,35 @@ func (a *Agent) Notify(person, ch, chat, text string) {
 // NotifyFiles is Notify with attachments (a job's renders, files it made).
 func (a *Agent) NotifyFiles(person, ch, chat, text string, files []string) {
 	a.notify(person, ch, chat, "notice", text, files)
+}
+
+// Send messages a person right now on one of their text channels (default:
+// their Discord DM) and records it as a notice, so the conversation knows it
+// went out. It says where it landed or why it didn't: the send_message tool,
+// which is how a voice call hands over links, lists and files.
+func (a *Agent) Send(person, ch, text string, files []string) (string, error) {
+	if ch == "" {
+		ch = "discord"
+	}
+	p, ch, chat, err := a.resolveTarget(ch + ":" + person)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(text) == "" && len(files) == 0 {
+		return "", fmt.Errorf("nothing to send")
+	}
+	id := a.Store.AddNotice(p.ID, ch, chat, "notice", text)
+	if len(files) > 0 {
+		a.Store.DB.Exec(`UPDATE turns SET attachments=? WHERE id=?`, strings.Join(files, "\n"), id)
+	}
+	if !a.deliver(context.Background(), p, ch, chat, id, text, files) {
+		return "", fmt.Errorf("%s didn't take it (see the dashboard trace for turn %d)", channelName(ch), id)
+	}
+	where := "delivered to " + channelName(ch)
+	if t, err := a.Store.Turn(id); err == nil && strings.TrimSpace(t.OutGUIDs) != "" {
+		where += " (message " + strings.TrimSpace(t.OutGUIDs) + ")"
+	}
+	return where, nil
 }
 
 // notify with kind "system" keeps harness chatter (/status, /help) out of the model's context.

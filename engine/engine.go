@@ -45,6 +45,11 @@ type Request struct {
 	Model    string  // overrides the engine's model for this turn (voice calls)
 	Effort   string  // overrides the engine's effort for this turn
 	Trace    func(kind, name, body string)
+	// OnText, if set, gets the reply's text as it's written (a voice call
+	// speaks it before the turn ends). Separate text blocks (before and after
+	// a tool call) arrive with a blank line between them. Engines that can't
+	// stream ignore it; the caller still gets the whole reply in Result.Text.
+	OnText func(text string)
 }
 
 type Usage struct {

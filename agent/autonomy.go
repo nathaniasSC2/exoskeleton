@@ -141,6 +141,41 @@ func (a *Agent) RunRoutine(ctx context.Context, id int64) (string, error) {
 	return reply, nil
 }
 
+// Task runs a turn nobody typed, for a deployment's own hooks (a summary after
+// a voice call, say): the caller writes the input and the brief (o.System),
+// it's recorded as kind with no recent conversation attached, and the reply
+// goes to the person on ch (their chat there, as for reminders) unless it's
+// exactly SILENT. Like a routine's message, the reply lands in the
+// conversation as a notice. It returns the reply ("" when silent). With
+// o.Test it's a dry run: side effects stubbed, recorded on the console, nothing sent.
+func (a *Agent) Task(ctx context.Context, person, ch, kind, input string, o TurnOpts) (string, error) {
+	p, ch, chat, err := a.resolveTarget(ch + ":" + person)
+	if err != nil {
+		return "", err
+	}
+	if a.mode() == "held" {
+		return "", ErrHeld
+	}
+	rec, recChat := ch, chat
+	if o.Test {
+		rec, recChat = "console", "console"
+	}
+	tid := a.Store.StartTurn(p.ID, rec, recChat, kind, input)
+	out := a.runTurnOpts(ctx, p, tid, rec, recChat, input, nil, turnOpts{noRecent: true, eval: o.Test, system: o.System,
+		model: o.Model, effort: o.Effort, localVariant: o.LocalVariant, deny: o.Deny, noCheckIn: true})
+	if out.err != nil && out.err.Err != nil {
+		return "", out.err.Err
+	}
+	reply := strings.TrimSpace(out.reply)
+	if strings.EqualFold(strings.Trim(reply, ". "), "SILENT") {
+		return "", nil
+	}
+	if !o.Test {
+		a.NotifyFiles(p.ID, ch, chat, reply, out.files)
+	}
+	return reply, nil
+}
+
 // ---- heartbeat ----
 
 // governHeartbeat says whether the saved plan-usage reading (the kv "limit"

@@ -64,6 +64,7 @@ var meta = map[string]struct {
 	"start_job":      {"server", "hand real work (edit, build, deploy, fix) to a background Claude Code session", true, 0},
 	"cancel_job":     {"server", "stop a background job", false, 0},
 	"send_file":      {"files", "send a server file with your reply", true, 0},
+	"send_message":   {"files", "message them now on a text channel (their Discord DM by default)", false, 0},
 	"set_interests":  {"self", "replace the interests list", false, 0},
 	"set_open_loops": {"self", "replace the open-loops list", false, 0},
 }
