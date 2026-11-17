@@ -67,6 +67,8 @@ func New(cfg *config.Config, st *store.Store) *Runner {
 	st.DB.Exec(`ALTER TABLE jobs ADD COLUMN kit TEXT NOT NULL DEFAULT 'general'`) // no-ops once they exist
 	st.DB.Exec(`ALTER TABLE jobs ADD COLUMN files TEXT NOT NULL DEFAULT ''`)
 	st.DB.Exec(`ALTER TABLE jobs ADD COLUMN brain TEXT NOT NULL DEFAULT 'claude'`)
+	st.DB.Exec(`ALTER TABLE jobs ADD COLUMN model TEXT NOT NULL DEFAULT ''`)
+	st.DB.Exec(`ALTER TABLE jobs ADD COLUMN effort TEXT NOT NULL DEFAULT ''`)
 	return r
 }
 
@@ -173,15 +175,40 @@ func (r *Runner) kit(name string) (tools.Kit, bool) {
 
 // StartKit runs a job with a specialist kit: only that kit's tools are loaded.
 func (r *Runner) StartKit(person, channel, chat, task, dir, kit string) (int64, error) {
+	return r.StartOpts(person, channel, chat, task, dir, Opts{Kit: kit})
+}
+
+// Opts are a job's own choices. Empty fields mean the defaults: the general
+// kit, and the configured model and effort.
+type Opts struct {
+	Kit    string
+	Model  string // a model id or alias for this job only
+	Effort string // low | medium | high | xhigh | max
+}
+
+var efforts = map[string]bool{"": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+
+// StartOpts runs a job with its own kit, model and effort.
+func (r *Runner) StartOpts(person, channel, chat, task, dir string, o Opts) (int64, error) {
+	kit := o.Kit
+	if kit == "" {
+		kit = "general"
+	}
 	if _, ok := r.kit(kit); !ok && kit != "general" {
 		return 0, fmt.Errorf("unknown kit %q", kit)
+	}
+	if !efforts[o.Effort] {
+		return 0, fmt.Errorf("unknown effort %q", o.Effort)
+	}
+	if strings.ContainsAny(o.Model, " \t\n") || strings.HasPrefix(o.Model, "-") {
+		return 0, fmt.Errorf("bad model name %q", o.Model)
 	}
 	task = strings.TrimSpace(task)
 	if task == "" {
 		return 0, fmt.Errorf("empty task")
 	}
-	res, err := r.Store.DB.Exec(`INSERT INTO jobs(person,channel,chat,task,workdir,created,kit) VALUES(?,?,?,?,?,?,?)`,
-		person, channel, chat, task, dir, time.Now().Unix(), kit)
+	res, err := r.Store.DB.Exec(`INSERT INTO jobs(person,channel,chat,task,workdir,created,kit,model,effort) VALUES(?,?,?,?,?,?,?,?,?)`,
+		person, channel, chat, task, dir, time.Now().Unix(), kit, o.Model, o.Effort)
 	if err != nil {
 		return 0, err
 	}
@@ -262,7 +289,18 @@ func (r *Runner) run(ctx context.Context, id int64, person, channel, chat, task,
 	if r.UnitArgs != nil {
 		args = append(args, r.UnitArgs(id, kit, dir)...)
 	}
-	model := []string{"--model", r.Cfg.Model, "--effort", r.Cfg.Effort}
+	// The job's own model and effort (StartOpts), else the configured ones.
+	// They are read from its row so a job queued across a restart keeps them.
+	useModel, useEffort := r.Cfg.Model, r.Cfg.Effort
+	var jm, je string
+	r.Store.DB.QueryRow(`SELECT model,effort FROM jobs WHERE id=?`, id).Scan(&jm, &je)
+	if jm != "" {
+		useModel = jm
+	}
+	if je != "" {
+		useEffort = je
+	}
+	model := []string{"--model", useModel, "--effort", useEffort}
 	if ag := r.Cfg.Agents(); ag != "" {
 		model = append(model, "--agents", ag)
 	}
