@@ -11,5 +11,5 @@
 <table class="turns" id="turns" data-live="{{if not .F.BeforeID}}1{{end}}" data-q="{{.Q}}">
 <thead><tr><th>time</th><th>who</th><th>message → reply</th><th>brain</th><th>took</th><th>ctx</th><th></th></tr></thead>
 <tbody>{{range .Turns}}{{template "row" .}}{{else}}<tr><td colspan=7 class="empty">No turns yet. Try the <a href="/console">console</a>.</td></tr>{{end}}</tbody></table>
-{{if .Older}}<p><a href="/?before={{.Older}}&person={{.F.Person}}">older →</a></p>{{end}}
+{{if .Older}}<p><a href="{{.LivePath}}?before={{.Older}}&person={{.F.Person}}">older →</a></p>{{end}}
 {{template "foot" .}}

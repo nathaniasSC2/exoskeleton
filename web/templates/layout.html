@@ -3,7 +3,7 @@
 <title>{{.Status.Name}} · {{.Page}}</title><link rel="stylesheet" href="/static/exo.css"><script src="/static/exo.js" defer></script></head>
 <body><header>
 <nav><b>{{.Status.Name}}</b>
-<a href="/" {{if eq .Page "live"}}class="on"{{end}}>Live</a>
+<a href="{{.LivePath}}" {{if eq .Page "live"}}class="on"{{end}}>Live</a>
 {{range .Nav}}{{if .First}}<a href="{{.Href}}" {{if has .Pages $.Page}}class="on"{{end}} title="{{.Title}}">{{.Label}}</a>
 {{end}}{{end}}<a href="/jobs" {{if eq .Page "jobs"}}class="on"{{end}}>Jobs</a>
 <a href="/schedule" {{if eq .Page "schedule"}}class="on"{{end}}>Schedule</a>
@@ -21,7 +21,7 @@
 {{range .Channels}}<span class="pill {{if .OK}}good{{else}}bad{{end}}">{{.Name}}</span>{{end}}
 {{if .DryRun}}<span class="pill warn" title="Replies are logged, not sent">dry run</span>{{end}}
 {{if not .Schedule}}<span class="pill dim" title="Script jobs are off (EXO_SCHEDULE)">schedule off</span>{{end}}
-<span class="stat">today {{.TurnsToday}} turns · p50 {{secs .P50}} · p90 {{secs .P90}} · ctx {{k .AvgIn}} tok · {{usd .CostToday}}{{if .Errors}} · <a href="/?errors=1" class="badtxt">{{.Errors}} errors</a>{{end}}{{if .JobsRunning}} · {{.JobsRunning}} jobs{{end}}</span>
+<span class="stat">today {{.TurnsToday}} turns · p50 {{secs .P50}} · p90 {{secs .P90}} · ctx {{k .AvgIn}} tok · {{usd .CostToday}}{{if .Errors}} · <a href="{{$.LivePath}}?errors=1" class="badtxt">{{.Errors}} errors</a>{{end}}{{if .JobsRunning}} · {{.JobsRunning}} jobs{{end}}</span>
 </div>{{end}}
 </header><main>{{end}}
 

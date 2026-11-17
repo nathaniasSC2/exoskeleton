@@ -47,6 +47,9 @@ type Server struct {
 	Pages fs.FS                    // more templates (*.html at its root), parsed with exo's so they can use head and foot
 	Funcs template.FuncMap         // template functions those pages need
 	Mount func(mux *http.ServeMux) // more routes
+	// Home is a deployment's own front page: "/" redirects to it and the turns
+	// table (always at /turns) is where the Live link goes. "" keeps Live at "/".
+	Home string
 
 	tpl       *template.Template
 	replaying atomic.Bool
@@ -118,7 +121,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.FileServerFS(assets))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
-	mux.HandleFunc("GET /{$}", s.live)
+	mux.HandleFunc("GET /{$}", s.root)
+	mux.HandleFunc("GET /turns", s.live)
 	mux.HandleFunc("GET /api/turns", s.apiTurns)
 	mux.HandleFunc("GET /api/status", s.apiStatus)
 	mux.HandleFunc("GET /turn/{id}", s.turn)
@@ -170,6 +174,7 @@ func (s *Server) Execute(w io.Writer, name string, data any) error {
 func (s *Server) Render(w http.ResponseWriter, name string, data map[string]any) {
 	data["Status"] = s.status()
 	data["Nav"] = s.Nav
+	data["LivePath"] = s.LivePath()
 	if _, ok := data["Page"]; !ok {
 		data["Page"] = name
 	}
@@ -272,6 +277,24 @@ func (s *Server) filter(r *http.Request) store.TurnFilter {
 	after, _ := strconv.ParseInt(q.Get("after"), 10, 64)
 	return store.TurnFilter{Person: q.Get("person"), Kind: q.Get("kind"), Feedback: q.Get("feedback") == "1",
 		Errors: q.Get("errors") == "1", BeforeID: before, AfterID: after, Limit: 50}
+}
+
+// LivePath is where the turns table lives: "/" unless a deployment's Home took it.
+func (s *Server) LivePath() string {
+	if s.Home != "" {
+		return "/turns"
+	}
+	return "/"
+}
+
+// root is "/": the deployment's front page when it has one. A request with a
+// query (an old link such as /?errors=1) still gets the turns table.
+func (s *Server) root(w http.ResponseWriter, r *http.Request) {
+	if s.Home != "" && r.URL.RawQuery == "" {
+		http.Redirect(w, r, s.Home, http.StatusFound)
+		return
+	}
+	s.live(w, r)
 }
 
 func (s *Server) live(w http.ResponseWriter, r *http.Request) {
@@ -515,7 +538,7 @@ func (s *Server) modePost(w http.ResponseWriter, r *http.Request) {
 	case "claude":
 		go s.Agent.GoClaude(context.Background(), "")
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, s.LivePath(), http.StatusSeeOther)
 }
 
 // ---- replay ----
