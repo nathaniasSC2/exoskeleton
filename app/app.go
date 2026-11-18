@@ -97,7 +97,7 @@ func New(cfg *config.Config) (*App, error) {
 	reg.SetLoops = a.SetLoops
 	reg.Send = a.Send
 	ap := &App{Cfg: cfg, Store: st, Agent: a, Reg: reg, Jobs: runner, MCP: http.NewServeMux()}
-	ap.Sched = &sched.Scheduler{Cfg: cfg, Store: st, Deliver: a.DeliverTarget, Routine: a.RunRoutine,
+	ap.Sched = &sched.Scheduler{Cfg: cfg, Store: st, Deliver: a.DeliverTarget, DeliverFiles: a.DeliverTargetFiles, Routine: a.RunRoutine,
 		Builtin: map[string]func(context.Context) (string, error){
 			"maintenance": ap.maintenance,
 			"heartbeat":   a.Heartbeat,

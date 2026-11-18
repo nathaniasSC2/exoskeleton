@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,10 @@ type Scheduler struct {
 	Cfg     *config.Config
 	Store   *store.Store
 	Deliver func(target, text string) error
-	Builtin map[string]func(context.Context) (string, error) // in-process jobs
+	// DeliverFiles sends text plus attachments. A cmd job attaches a file by
+	// printing a line "ATTACH: /absolute/path"; see Attachments.
+	DeliverFiles func(target, text string, files []string) error
+	Builtin      map[string]func(context.Context) (string, error) // in-process jobs
 	// Routine runs a routine by id ("routine:12" entries); routines deliver
 	// their own messages.
 	Routine func(ctx context.Context, id int64) (string, error)
@@ -212,8 +216,16 @@ func (s *Scheduler) run(e Entry) {
 		}
 	}
 	delivered := 0
-	if out != "" && e.Deliver != "" && s.Deliver != nil {
-		if err := s.Deliver(e.Deliver, out); err != nil {
+	text, files := Attachments(out)
+	if len(files) > 0 && s.DeliverFiles == nil {
+		text, files = out, nil // nothing can attach: send the lines as they are
+	}
+	if (text != "" || len(files) > 0) && e.Deliver != "" && s.Deliver != nil {
+		send := func() error { return s.Deliver(e.Deliver, text) }
+		if len(files) > 0 {
+			send = func() error { return s.DeliverFiles(e.Deliver, text, files) }
+		}
+		if err := send(); err != nil {
 			slog.Warn("schedule delivery", "job", e.Name, "err", err)
 		} else {
 			delivered = 1
@@ -221,4 +233,23 @@ func (s *Scheduler) run(e Entry) {
 	}
 	s.Store.DB.Exec(`UPDATE runs SET finished=?, exit=?, output=?, delivered=? WHERE id=?`, time.Now().Unix(), exit, out, delivered, runID)
 	slog.Info("scheduled run", "job", e.Name, "exit", exit, "chars", len(out), "delivered", delivered == 1)
+}
+
+// Attachments splits a cmd job's output into the message and its files. A line
+// "ATTACH: /absolute/path" names a file to send with the message; it is taken
+// out of the text. A path that is relative, missing or not a regular file stays
+// in the text as it was, so a mistake is visible instead of silently dropped.
+func Attachments(out string) (string, []string) {
+	var keep, files []string
+	for _, line := range strings.Split(out, "\n") {
+		if p, ok := strings.CutPrefix(strings.TrimSpace(line), "ATTACH: "); ok {
+			p = strings.TrimSpace(p)
+			if st, err := os.Stat(p); err == nil && filepath.IsAbs(p) && st.Mode().IsRegular() {
+				files = append(files, p)
+				continue
+			}
+		}
+		keep = append(keep, line)
+	}
+	return strings.TrimSpace(strings.Join(keep, "\n")), files
 }

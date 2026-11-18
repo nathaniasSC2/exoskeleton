@@ -590,6 +590,16 @@ func (a *Agent) notify(person, ch, chat, kind, text string, files []string) bool
 }
 
 // DeliverTarget resolves "<channel>:<person>" (e.g. "discord:alex") for scheduled jobs.
+// DeliverTargetFiles is DeliverTarget with attachments (a scheduled job's files).
+func (a *Agent) DeliverTargetFiles(target, text string, files []string) error {
+	p, ch, chat, err := a.resolveTarget(target)
+	if err != nil {
+		return err
+	}
+	a.NotifyFiles(p.ID, ch, chat, text, files)
+	return nil
+}
+
 func (a *Agent) DeliverTarget(target, text string) error {
 	p, ch, chat, err := a.resolveTarget(target)
 	if err != nil {
