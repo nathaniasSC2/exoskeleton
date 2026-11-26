@@ -45,6 +45,7 @@ func TestCrossSite(t *testing.T) {
 		{"evil Origin straight to loopback", "POST", map[string]string{"Origin": "https://evil.example"}, "local", false},
 		{"no headers through tailscale serve", "POST", nil, "tailnet", false},
 		{"no headers from a local script", "POST", nil, "local", true},
+		{"local script sending its own login header", "POST", map[string]string{"Tailscale-User-Login": "owner@example.com", "X-Core": "1"}, "local", true},
 		{"no headers from the LAN", "POST", nil, "lan", false},
 		{"DELETE forged", "DELETE", map[string]string{"Sec-Fetch-Site": "cross-site"}, "tailnet", false},
 	}

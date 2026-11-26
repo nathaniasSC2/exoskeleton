@@ -77,11 +77,14 @@ func originMatches(o string, r *http.Request) bool {
 	return false
 }
 
-// directLocal: a loopback peer that did not come through tailscale serve
-// (which always adds X-Forwarded-For and its Tailscale-* headers).
+// directLocal: a loopback peer that did not come through tailscale serve,
+// which always adds X-Forwarded-For and Tailscale-Headers-Info (a browser
+// can't remove them). A local script may send Tailscale-User-Login itself to
+// pass a deployment's login check (Kiki's Thanksgiving watchdog does); that
+// alone doesn't make it a proxied browser request.
 func directLocal(r *http.Request) bool {
-	if r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("Tailscale-User-Login") != "" ||
-		r.Header.Get("Tailscale-Headers-Info") != "" || r.Header.Get("Forwarded") != "" {
+	if r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("Tailscale-Headers-Info") != "" ||
+		r.Header.Get("Forwarded") != "" {
 		return false
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
