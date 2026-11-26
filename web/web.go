@@ -150,7 +150,7 @@ func (s *Server) Handler() http.Handler {
 	if s.Mount != nil {
 		s.Mount(mux)
 	}
-	return logRequests(mux)
+	return logRequests(SameOrigin(mux))
 }
 
 func logRequests(h http.Handler) http.Handler {

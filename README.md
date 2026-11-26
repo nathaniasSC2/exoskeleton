@@ -58,6 +58,11 @@ flowchart LR
 - **Routines and heartbeat.** The assistant can schedule its own recurring
   tasks, and an optional heartbeat reviews recent conversations, keeps an
   interests list and open loops, and messages only when something's worth it.
+- **Cross-site guard.** Every dashboard POST (exo's and a deployment's
+  mounted routes) must come from the dashboard's own pages: `Sec-Fetch-Site`
+  same-origin or none, or an `Origin` naming the host. A request with neither
+  header passes only from a local script calling 127.0.0.1 directly, not
+  through `tailscale serve` (`web/sameorigin.go`).
 - **Per-person privacy.** Admins get server tools; everyone else gets chat,
   memory and reminders, and the dashboard shows their turns as metadata only.
 
