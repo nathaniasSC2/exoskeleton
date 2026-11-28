@@ -15,4 +15,5 @@ Work through these in order:
 Reply in exactly this format:
 
 MESSAGE: <the text to send, or SILENT>
+KIND: <what kind of message it was and its one specific thing, e.g. "heads-up: Jets injury report" or "follow-up: the backup job"; or none>
 LOG: <two to four lines of notes to yourself for next time: what you learned and saved, what you checked, and why you did or didn't message>

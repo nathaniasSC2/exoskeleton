@@ -9,6 +9,8 @@ package jobs
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -483,8 +485,9 @@ func (r *Runner) finish(id int64, person, channel, chat, status, result string, 
 	slog.Info("job finished", "id", id, "status", status, "took", took.Round(time.Second))
 	msg := fmt.Sprintf("Job #%d %s (%s):\n\n%s", id, status, human(took), clip(result, 1800))
 	if r.Notify != nil {
-		r.Notify(person, channel, chat, msg, files)
+		r.Notify(person, channel, chat, msg, files) // delivers its files before they can go below
 	}
+	r.removeScratch(id)
 }
 
 func (r *Runner) Cancel(person string, id int64) error {
@@ -513,9 +516,11 @@ func (r *Runner) Cancel(person string, id int64) error {
 }
 
 // Running describes a person's running jobs for the heartbeat: what each is
-// doing, for how long, and when it last showed signs of life.
+// doing, for how long, and when it last showed signs of life. Jobs started
+// on the console channel (dashboard tests, a deployment's own page-only
+// loops) aren't the person's to hear about, so they're left out.
 func (r *Runner) Running(person string) []string {
-	rows, err := r.Store.DB.Query(`SELECT id,kit,task,COALESCE(started,created),log_path FROM jobs WHERE person=? AND status IN ('queued','running') ORDER BY id`, person)
+	rows, err := r.Store.DB.Query(`SELECT id,kit,task,COALESCE(started,created),log_path FROM jobs WHERE person=? AND status IN ('queued','running') AND channel<>'console' ORDER BY id`, person)
 	if err != nil {
 		return nil
 	}
@@ -534,6 +539,32 @@ func (r *Runner) Running(person string) []string {
 			strings.ReplaceAll(Tail(logPath, 3), "\n", "\n  ")))
 	}
 	return out
+}
+
+// Quiet names a person's running job (not a console one) that has been
+// running and silent for at least d, or "": the heartbeat wakes to flag it.
+func (r *Runner) Quiet(person string, d time.Duration) string {
+	rows, err := r.Store.DB.Query(`SELECT id,COALESCE(started,created),log_path FROM jobs WHERE person=? AND status='running' AND channel<>'console' ORDER BY id`, person)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, started int64
+		var logPath string
+		rows.Scan(&id, &started, &logPath)
+		if time.Since(time.Unix(started, 0)) < d {
+			continue
+		}
+		last := time.Unix(started, 0)
+		if st, err := os.Stat(logPath); err == nil {
+			last = st.ModTime()
+		}
+		if time.Since(last) >= d {
+			return fmt.Sprintf("job #%d has been quiet for %s", id, human(time.Since(last)))
+		}
+	}
+	return ""
 }
 
 func (r *Runner) Describe(person string, id int64) string {
@@ -572,17 +603,27 @@ func (r *Runner) Describe(person string, id int64) string {
 	return s
 }
 
-// Tail summarizes the last few events of a job log: assistant text and tool names.
+// Tail summarizes the last few events of a job log: assistant text and tool
+// names. A log maintenance has compressed (path + ".gz") is read too.
 func Tail(path string, n int) string {
+	var src io.Reader
 	f, err := os.Open(path)
-	if err != nil {
+	if err == nil {
+		defer f.Close()
+		st, _ := f.Stat()
+		f.Seek(max(0, st.Size()-256<<10), 0)
+		src = f
+	} else if gz, err := os.Open(path + ".gz"); err == nil {
+		defer gz.Close()
+		zr, err := gzip.NewReader(gz)
+		if err != nil {
+			return ""
+		}
+		src = lastBytes(zr, 256<<10) // a gzip stream can't seek: keep its last 256 KB
+	} else {
 		return ""
 	}
-	defer f.Close()
-	st, _ := f.Stat()
-	off := max(0, st.Size()-256<<10)
-	f.Seek(off, 0)
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(src)
 	sc.Buffer(make([]byte, 1<<20), 32<<20)
 	var lines []string
 	for sc.Scan() {
@@ -607,6 +648,26 @@ func Tail(path string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// lastBytes reads r to the end and returns its last n bytes.
+func lastBytes(r io.Reader, n int) io.Reader {
+	buf := make([]byte, 0, 2*n)
+	chunk := make([]byte, 64<<10)
+	for {
+		k, err := r.Read(chunk)
+		buf = append(buf, chunk[:k]...)
+		if len(buf) > 2*n {
+			buf = append(buf[:0], buf[len(buf)-n:]...)
+		}
+		if err != nil {
+			break
+		}
+	}
+	if len(buf) > n {
+		buf = buf[len(buf)-n:]
+	}
+	return bytes.NewReader(buf)
 }
 
 // human formats a duration the way you'd text it: 40s, 12m, 1h5m.

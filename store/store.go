@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -615,14 +616,64 @@ func (s *Store) System(hash string) string {
 
 // ---- maintenance ----
 
-// Prune keeps the database from growing without bound: full traces and old
-// events go after traceDays; turns, facts and jobs stay (they're small text).
-func (s *Store) Prune(ctx context.Context, traceDays int) {
-	cut := time.Now().AddDate(0, 0, -traceDays).Unix()
-	s.DB.ExecContext(ctx, `DELETE FROM trace WHERE ts<?`, cut)
-	s.DB.ExecContext(ctx, `DELETE FROM events WHERE ts<?`, cut)
-	s.DB.ExecContext(ctx, `DELETE FROM runs WHERE started<?`, cut)
-	s.DB.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+// PruneOpts says what Prune removes. Zero days keeps that kind forever.
+type PruneOpts struct {
+	TraceDays  int            // trace rows, inbound events and scheduled runs
+	ShadowDays int            // shadow-mode rows
+	KV         map[string]int // kv keys starting with each prefix, by days since last set
+	Dry        bool           // count what would go, change nothing
+}
+
+// Prune keeps the database from growing without bound: full traces, old
+// events, runs, shadow rows and per-item kv keys go after their days; turns,
+// facts and jobs stay (they're small text). It returns how many rows of each
+// kind went (or would, with Dry), and every error: a prune that silently
+// failed is how a database grows for months.
+func (s *Store) Prune(ctx context.Context, o PruneOpts) (map[string]int64, error) {
+	days := func(n int) int64 { return time.Now().AddDate(0, 0, -n).Unix() }
+	type q struct {
+		name, from, where string
+		args              []any
+	}
+	var qs []q
+	if o.TraceDays > 0 {
+		cut := days(o.TraceDays)
+		qs = append(qs, q{"trace", "trace", "ts<?", []any{cut}}, q{"events", "events", "ts<?", []any{cut}}, q{"runs", "runs", "started<?", []any{cut}})
+	}
+	if o.ShadowDays > 0 {
+		qs = append(qs, q{"shadow", "shadow", "ts<?", []any{days(o.ShadowDays)}})
+	}
+	for prefix, n := range o.KV {
+		if prefix == "" || n <= 0 {
+			continue // an empty prefix would match every key
+		}
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+		qs = append(qs, q{"kv " + prefix + "*", "kv", `k LIKE ? ESCAPE '\' AND ts<?`, []any{esc + "%", days(n)}})
+	}
+	out := map[string]int64{}
+	var errs []error
+	for _, x := range qs {
+		if o.Dry {
+			var n int64
+			if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+x.from+` WHERE `+x.where, x.args...).Scan(&n); err != nil {
+				errs = append(errs, fmt.Errorf("count %s: %w", x.name, err))
+			}
+			out[x.name] = n
+			continue
+		}
+		res, err := s.DB.ExecContext(ctx, `DELETE FROM `+x.from+` WHERE `+x.where, x.args...)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("prune %s: %w", x.name, err))
+			continue
+		}
+		out[x.name], _ = res.RowsAffected()
+	}
+	if !o.Dry {
+		if _, err := s.DB.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+			errs = append(errs, fmt.Errorf("wal checkpoint: %w", err))
+		}
+	}
+	return out, errors.Join(errs...)
 }
 
 func (s *Store) Backup(ctx context.Context, path string) error {

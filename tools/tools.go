@@ -200,7 +200,7 @@ type Registry struct {
 	// Routines, SetInterests and SetLoops are implemented by the agent.
 	Routines     RoutineManager
 	SetInterests func(person, text string) error
-	SetLoops     func(person, text string)
+	SetLoops     func(person, text string) error
 	// Send messages the person now on a text channel ("" = their Discord DM)
 	// and says where it landed (the agent's Send). nil = no send_message.
 	Send func(person, channel, text string, files []string) (string, error)
@@ -272,7 +272,7 @@ func New(cfg *config.Config, st *store.Store, jobs Jobs, notes NotesClient) *Reg
 			},
 			Required: []string{"action"}, Run: r.routine},
 		{Name: "set_interests", Set: "heartbeat",
-			Desc:     "Replace the list of what this person is into or tracking right now (12 lines max, one per line: topic, why it matters, what's next). Shown to you in every conversation.",
+			Desc:     "Replace the list of what this person is into or tracking right now (12 lines and 1,600 characters max, one per line: topic, why it matters, what's next). Shown to you in every conversation.",
 			Params:   map[string]any{"text": str("The whole list")},
 			Required: []string{"text"}, Run: func(_ context.Context, c *Ctx, a Args) Result {
 				if r.SetInterests == nil {
@@ -284,13 +284,15 @@ func New(cfg *config.Config, st *store.Store, jobs Jobs, notes NotesClient) *Reg
 				return Result{Text: "interests saved"}
 			}},
 		{Name: "set_open_loops", Set: "heartbeat",
-			Desc:     "Replace the list of open loops: things this person is waiting on, things you promised to check or do, and unresolved questions (8 lines max, each with a date or trigger). Shown to you in every conversation. Drop what's done.",
+			Desc:     "Replace the list of open loops: things this person is waiting on, things you promised to check or do, and unresolved questions (8 lines and 1,000 characters max, each with a date or trigger). Shown to you in every conversation. Drop what's done.",
 			Params:   map[string]any{"text": str("The whole list, or empty to clear")},
 			Required: []string{"text"}, Run: func(_ context.Context, c *Ctx, a Args) Result {
 				if r.SetLoops == nil {
 					return Result{Text: "unavailable", IsError: true}
 				}
-				r.SetLoops(c.Person.ID, a.S("text"))
+				if err := r.SetLoops(c.Person.ID, a.S("text")); err != nil {
+					return Result{Text: err.Error(), IsError: true}
+				}
 				return Result{Text: "open loops saved"}
 			}},
 		{Name: "recall", Where: "both",

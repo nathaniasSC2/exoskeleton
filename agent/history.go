@@ -16,9 +16,12 @@ import (
 type Caps struct {
 	Input, Reply int // characters kept of each message from the person / each reply
 	Chars, Turns int // the window's size limits
+	// Budget is the history plus the <context> block, in characters (default
+	// BudgetChatContext): retrieval is cut to what the window leaves.
+	Budget int
 }
 
-var defaultCaps = Caps{Input: inputClip, Reply: replyClip, Chars: recentChars, Turns: recentTurns}
+var defaultCaps = Caps{Input: inputClip, Reply: replyClip, Chars: recentChars, Turns: recentTurns, Budget: BudgetChatContext}
 
 // ChannelCaps gives a channel its own window: its turns are clipped by its
 // Input/Reply, and while the conversation is on it (the turn being answered
@@ -43,6 +46,9 @@ func capsFor(ch string) Caps {
 	}
 	if c.Turns == 0 {
 		c.Turns = recentTurns
+	}
+	if c.Budget == 0 {
+		c.Budget = BudgetChatContext
 	}
 	return c
 }

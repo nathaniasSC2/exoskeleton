@@ -30,7 +30,43 @@ type Entry struct {
 	Cmd        string `json:"cmd"`
 	Deliver    string `json:"deliver"` // "discord:<person>" | "" (log only)
 	TimeoutMin int    `json:"timeout_min"`
+	// Until makes an entry temporary: "YYYY-MM-DD" (through the end of that
+	// local day) or an RFC 3339 time. Past it the entry stops running, and
+	// nightly maintenance takes it out of schedule.json (app/temp.go).
+	Until string `json:"until,omitempty"`
 }
+
+// UntilTime is when a temporary entry stops (ok=false: no until, or one that
+// doesn't parse; UntilErr tells the two apart).
+func (e Entry) UntilTime(loc *time.Location) (time.Time, bool) {
+	t, err := ParseUntil(e.Until, loc)
+	return t, err == nil && !t.IsZero()
+}
+
+// ParseUntil reads an until value: "" is the zero time, "YYYY-MM-DD" is the
+// end of that local day, otherwise RFC 3339.
+func ParseUntil(s string, loc *time.Location) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if d, err := time.ParseInLocation("2006-01-02", s, loc); err == nil {
+		return d.AddDate(0, 0, 1), nil
+	}
+	return time.Parse(time.RFC3339, s)
+}
+
+// Expired reports whether a temporary entry is past its until.
+func (e Entry) Expired(now time.Time, loc *time.Location) bool {
+	t, ok := e.UntilTime(loc)
+	return ok && !now.Before(t)
+}
+
+type manualKey struct{}
+
+// Manual reports whether a built-in was started by hand (Run now on the
+// dashboard) rather than by its schedule, so it can skip its own idle checks.
+func Manual(ctx context.Context) bool { v, _ := ctx.Value(manualKey{}).(bool); return v }
 
 type Scheduler struct {
 	Cfg     *config.Config
@@ -130,6 +166,9 @@ func (s *Scheduler) Start(builtins []Entry) error {
 	s.c = cron.New(cron.WithLocation(s.Cfg.Loc))
 	for _, e := range entries {
 		e := e
+		if _, err := ParseUntil(e.Until, s.Cfg.Loc); err != nil {
+			slog.Warn("schedule: unreadable until, the entry runs without one", "job", e.Name, "until", e.Until)
+		}
 		if _, err := s.c.AddJob(e.Cron, namedJob{e.Name, func() { s.run(e) }}); err != nil {
 			return fmt.Errorf("schedule %s: %w", e.Name, err)
 		}
@@ -150,14 +189,20 @@ func (s *Scheduler) Stop() {
 func (s *Scheduler) RunNow(name string) error {
 	for _, e := range s.Entries() {
 		if e.Name == name || e.Cmd == name {
-			go s.run(e)
+			go s.runCtx(context.WithValue(context.Background(), manualKey{}, true), e)
 			return nil
 		}
 	}
 	return fmt.Errorf("no job %q", name)
 }
 
-func (s *Scheduler) run(e Entry) {
+func (s *Scheduler) run(e Entry) { s.runCtx(context.Background(), e) }
+
+func (s *Scheduler) runCtx(parent context.Context, e Entry) {
+	if !Manual(parent) && e.Expired(time.Now(), s.Cfg.Loc) {
+		slog.Info("scheduled run skipped: past its until", "job", e.Name, "until", e.Until)
+		return
+	}
 	s.mu.Lock()
 	if s.running[e.Name] {
 		s.mu.Unlock()
@@ -171,7 +216,7 @@ func (s *Scheduler) run(e Entry) {
 	if e.TimeoutMin == 0 {
 		timeout = 30 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	res, _ := s.Store.DB.Exec(`INSERT INTO runs(name,started) VALUES(?,?)`, e.Name, time.Now().Unix())
 	runID, _ := res.LastInsertId()

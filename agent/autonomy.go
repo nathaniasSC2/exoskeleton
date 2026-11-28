@@ -225,105 +225,24 @@ func (a *Agent) Heartbeat(ctx context.Context) (string, error) {
 		}
 	}
 	now := time.Now()
-	since := now.Add(-24 * time.Hour).Unix()
+	last := now.Add(-24 * time.Hour)
 	if v := a.Store.Get("heartbeat:at"); v != "" {
-		fmt.Sscan(v, &since)
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Heartbeat at %s. Last heartbeat: %s.\n\n", now.In(a.Cfg.Loc).Format("Mon Jan 2 3:04 PM"),
-		time.Unix(since, 0).In(a.Cfg.Loc).Format("Mon Jan 2 3:04 PM"))
-
-	turns, _ := a.Store.TurnsSince(p.ID, since, 120)
-	var lines []string
-	for _, t := range turns {
-		when := time.Unix(t.Started, 0).In(a.Cfg.Loc).Format("Mon 3:04PM")
-		if t.Kind == "chat" {
-			lines = append(lines, fmt.Sprintf("[%s %s] %s: %s\n  %s: %s", when, t.Channel, p.Name, oneLine(t.Input, 400), a.Cfg.Name, oneLine(t.Reply, 400)))
-		} else if t.Kind == "external" {
-			lines = append(lines, fmt.Sprintf("[%s] (sent to %s by another system): %s", when, p.Name, oneLine(t.Reply, 300)))
-		} else if t.Kind == "action" {
-			lines = append(lines, fmt.Sprintf("[%s] (server change log): %s", when, oneLine(t.Reply, 300)))
-		} else {
-			lines = append(lines, fmt.Sprintf("[%s] %s (unprompted): %s", when, a.Cfg.Name, oneLine(t.Reply, 300)))
+		var ts int64
+		if _, err := fmt.Sscan(v, &ts); err == nil {
+			last = time.Unix(ts, 0)
 		}
 	}
-	for total(lines) > 14000 && len(lines) > 1 {
-		lines = lines[1:]
-	}
-	if len(lines) == 0 {
-		b.WriteString("Conversation since then: none.\n\n")
-	} else {
-		b.WriteString("Conversation since then (oldest first):\n" + strings.Join(lines, "\n") + "\n\n")
-	}
-	if rows, err := a.Store.DB.Query(`SELECT id,status,task,result FROM jobs WHERE person=? AND COALESCE(finished,created)>? ORDER BY id LIMIT 10`, p.ID, since); err == nil {
-		var js []string
-		for rows.Next() {
-			var id int64
-			var st, task, res string
-			rows.Scan(&id, &st, &task, &res)
-			js = append(js, fmt.Sprintf("- #%d %s: %s → %s", id, st, oneLine(task, 120), oneLine(res, 200)))
-		}
-		rows.Close()
-		if len(js) > 0 {
-			b.WriteString("Background jobs since then:\n" + strings.Join(js, "\n") + "\n\n")
+	// Idle ticks cost nothing: the model runs only when something changed
+	// (heartbeatWake). heartbeat:at stays at the last tick that ran, so the
+	// next one that does still covers everything since.
+	why := "a manual run"
+	if !sched.Manual(ctx) {
+		why = a.heartbeatWake(p, last, now)
+		if why == "" && a.Cfg.HeartbeatIdleSkip {
+			return "skipped: nothing new since " + last.In(a.Cfg.Loc).Format("Mon 3:04 PM"), nil
 		}
 	}
-	if rows, err := a.Store.DB.Query(`SELECT name,substr(output,1,200) FROM runs WHERE exit<>0 AND started>? ORDER BY id LIMIT 5`, since); err == nil {
-		var bad []string
-		for rows.Next() {
-			var n, o string
-			rows.Scan(&n, &o)
-			bad = append(bad, "- "+n+": "+oneLine(o, 200))
-		}
-		rows.Close()
-		if len(bad) > 0 {
-			b.WriteString("Scheduled runs that failed since then:\n" + strings.Join(bad, "\n") + "\n\n")
-		}
-	}
-	if a.Jobs != nil {
-		if run := a.Jobs.Running(p.ID); len(run) > 0 {
-			b.WriteString("Background jobs still running:\n" + strings.Join(run, "\n") + "\n\n")
-		}
-	}
-	// Hourly runs must not repeat themselves: show everything already said unprompted today.
-	y, mo, d := now.In(a.Cfg.Loc).Date()
-	midnight := time.Date(y, mo, d, 0, 0, 0, 0, a.Cfg.Loc).Unix()
-	if rows, err := a.Store.DB.Query(`SELECT started,reply FROM turns WHERE person=? AND kind='notice' AND channel<>'console' AND started>? ORDER BY id LIMIT 20`, p.ID, midnight); err == nil {
-		var said []string
-		for rows.Next() {
-			var ts int64
-			var r string
-			rows.Scan(&ts, &r)
-			said = append(said, fmt.Sprintf("- %s: %s", time.Unix(ts, 0).In(a.Cfg.Loc).Format("3:04PM"), oneLine(r, 200)))
-		}
-		rows.Close()
-		if len(said) > 0 {
-			b.WriteString("Already sent him unprompted today (don't repeat):\n" + strings.Join(said, "\n") + "\n\n")
-		}
-	}
-	// Its own texts today, apart from the automated reports above, so it can pace check-ins.
-	if mine := recentHeartbeatTexts(a.Store, p.ID, midnight, now.Unix()+1, a.Cfg.Loc, a.Cfg.QuietFrom, a.Cfg.QuietTo); len(mine) > 0 {
-		b.WriteString("Your own texts to him today, from earlier heartbeats:\n" + strings.Join(mine, "\n") + "\n\n")
-	} else {
-		b.WriteString("Your own texts to him today, from earlier heartbeats: none yet.\n\n")
-	}
-	if past := recentHeartbeatTexts(a.Store, p.ID, midnight-3*86400, midnight, a.Cfg.Loc, a.Cfg.QuietFrom, a.Cfg.QuietTo); len(past) > 0 {
-		b.WriteString("Your own texts to him on the three days before today (vary what you bring up):\n" + strings.Join(past, "\n") + "\n\n")
-	}
-	if in := a.Store.Get("interests:" + p.ID); in != "" {
-		b.WriteString("Current interests list:\n" + in + "\n\n")
-	} else {
-		b.WriteString("Current interests list: (empty; build one from what you know about him)\n\n")
-	}
-	if loops := a.Store.Get("loops:" + p.ID); loops != "" {
-		b.WriteString("Open loops:\n" + loops + "\n\n")
-	} else {
-		b.WriteString("Open loops: (none recorded)\n\n")
-	}
-	if log := a.Store.Get("heartbeat:log"); log != "" {
-		b.WriteString("Your notes from the last heartbeat:\n" + log + "\n")
-	}
-	input := b.String()
+	input := a.heartbeatDigest(p, last, now, why)
 
 	ch, chat := a.lastChat(p)
 	tid := a.Store.StartTurn(p.ID, ch, chat, "heartbeat", input)
@@ -333,15 +252,17 @@ func (a *Agent) Heartbeat(ctx context.Context) (string, error) {
 	if out.err != nil && out.err.Err != nil {
 		return "", out.err.Err
 	}
-	msg, log := splitHeartbeat(out.reply)
+	msg, _, log := parseHeartbeat(out.reply)
 	a.Store.Set("heartbeat:at", fmt.Sprint(now.Unix()))
 	a.Store.Set("heartbeat:log", log)
 	h := now.In(a.Cfg.Loc).Hour()
 	if msg == "" || inQuiet(h, a.Cfg.QuietFrom, a.Cfg.QuietTo) { // quiet hours are a hard rule, not a suggestion
-		return "silent\n" + log, nil
+		a.Store.Set("heartbeat:msg", "")
+		return "silent (" + why + ")\n" + log, nil
 	}
+	a.Store.Set("heartbeat:msg", strings.TrimSpace(msg))
 	a.NotifyFiles(p.ID, ch, chat, msg, out.files)
-	return "messaged: " + msg + "\n" + log, nil
+	return "messaged (" + why + "): " + msg + "\n" + log, nil
 }
 
 // recentHeartbeatTexts lists what the heartbeat itself texted between from and
@@ -382,36 +303,37 @@ func inQuiet(h, from, to int) bool {
 
 // splitHeartbeat reads "MESSAGE: ... LOG: ..." (MESSAGE may be SILENT).
 func splitHeartbeat(s string) (msg, log string) {
-	s = strings.TrimSpace(s)
-	if i := strings.Index(s, "LOG:"); i >= 0 {
-		log = strings.TrimSpace(s[i+4:])
-		s = strings.TrimSpace(s[:i])
-	}
-	s = strings.TrimSpace(strings.TrimPrefix(s, "MESSAGE:"))
-	if strings.EqualFold(strings.Trim(s, ". "), "SILENT") {
-		s = ""
-	}
-	return s, log
+	msg, _, log = parseHeartbeat(s)
+	return msg, log
 }
 
-// SetLoops saves the open-loops list (what's pending, promised or unresolved).
-func (a *Agent) SetLoops(person, text string) {
+// SetLoops saves the open-loops list (what's pending, promised or
+// unresolved): 8 lines and maxLoopsChars at most, since it's in every
+// system prompt. An over-long list is refused so the model rewrites it
+// shorter, rather than losing its last lines without knowing.
+func (a *Agent) SetLoops(person, text string) error {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	if len(lines) > 8 {
 		lines = lines[:8]
 	}
-	a.Store.Set("loops:"+person, strings.TrimSpace(strings.Join(lines, "\n")))
+	text = strings.TrimSpace(strings.Join(lines, "\n"))
+	if len(text) > maxLoopsChars {
+		return fmt.Errorf("the open loops are %d characters; the limit is %d, so shorten them (a line each: what, and when or what triggers it) and save again", len(text), maxLoopsChars)
+	}
+	a.Store.Set("loops:"+person, text)
+	return nil
 }
 
-// SetInterests saves the interests list (shown in every chat's system prompt).
+// SetInterests saves the interests list (shown in every chat's system
+// prompt): 12 lines and maxInterestsChars at most; longer is refused.
 func (a *Agent) SetInterests(person, text string) error {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	if len(lines) > 12 {
 		lines = lines[:12]
 	}
 	text = strings.Join(lines, "\n")
-	if len(text) > 2000 {
-		text = text[:2000]
+	if len(text) > maxInterestsChars {
+		return fmt.Errorf("the interests list is %d characters; the limit is %d, so tighten the lines (topic, why, what's next with a date) and save again", len(text), maxInterestsChars)
 	}
 	a.Store.Set("interests:"+person, text)
 	if a.OnInterests != nil {

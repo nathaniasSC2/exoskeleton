@@ -71,6 +71,10 @@ type Config struct {
 	JobTimeout   time.Duration
 	CheckIn      time.Duration // a chat turn still running this long sends a progress note (0 = never)
 	MaxJobs      int
+	// JobScratch are a job's scratch directories, with {id} for its number
+	// (default /tmp/j{id}): removed when the job ends, and by maintenance once
+	// they're two days old with no job running.
+	JobScratch []string
 
 	LocalURL       string // OpenAI-compatible endpoint (llama.cpp's llama-server, vLLM, Ollama)
 	LocalModel     string
@@ -87,6 +91,12 @@ type Config struct {
 	NotesSearch        string // search_type for note hints: vector (default) | hybrid | text
 	Heartbeat          string // cron for the heartbeat; "" = off (Run now still works)
 	QuietFrom, QuietTo int    // the heartbeat never messages in [from, to) local hours
+	// HeartbeatIdleSkip skips the model call on a tick where nothing changed
+	// since the last heartbeat that ran (agent.heartbeatWake has the reasons).
+	HeartbeatIdleSkip bool
+	// HeartbeatAlwaysAt lists local hours whose first tick always runs, for
+	// duties the brief ties to a time of day (an evening review, say).
+	HeartbeatAlwaysAt []int
 
 	People []*Person
 }
@@ -112,6 +122,31 @@ func parseBool(v string, def bool) bool {
 		return false
 	}
 	return def
+}
+
+// hours reads a comma-separated list of local hours (0-23); others are dropped.
+func hours(s string) []int {
+	var out []int
+	for _, f := range strings.Split(s, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 && n < 24 {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// scratch reads JOB_SCRATCH: absolute paths that contain {id} in their last
+// element; anything else is dropped (a bad pattern must never match more
+// than one job's own directory).
+func scratch(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, ",") {
+		f = strings.TrimSpace(f)
+		if filepath.IsAbs(f) && strings.Contains(filepath.Base(f), "{id}") && !strings.Contains(filepath.Dir(f), "{id}") {
+			out = append(out, filepath.Clean(f))
+		}
+	}
+	return out
 }
 
 // EnvInt reads an integer, else def.
@@ -195,6 +230,7 @@ func LoadBrand(b Brand) (*Config, error) {
 		JobTimeout:      time.Duration(envInt("JOB_TIMEOUT_M", 90)) * time.Minute,
 		CheckIn:         time.Duration(envInt("CHECKIN_S", 180)) * time.Second,
 		MaxJobs:         envInt("MAX_JOBS", 2),
+		JobScratch:      scratch(env("JOB_SCRATCH", "/tmp/j{id}")),
 		LocalURL:        strings.TrimRight(env("LOCAL_URL", "http://127.0.0.1:8080/v1"), "/"),
 		LocalModel:      env("LOCAL_MODEL", "local"),
 		LocalStart:      env("LOCAL_START", ""),
@@ -208,6 +244,9 @@ func LoadBrand(b Brand) (*Config, error) {
 		Heartbeat:       env("HEARTBEAT", ""),
 		QuietFrom:       envInt("QUIET_FROM", 22),
 		QuietTo:         envInt("QUIET_TO", 7),
+
+		HeartbeatIdleSkip: envBool("HEARTBEAT_IDLE_SKIP", true),
+		HeartbeatAlwaysAt: hours(env("HEARTBEAT_ALWAYS_AT", "")),
 	}
 	c.BackupDir = env("BACKUP_DIR", c.Path("backups"))
 	if c.MCPToken == "" {

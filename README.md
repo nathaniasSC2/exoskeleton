@@ -58,6 +58,16 @@ flowchart LR
 - **Routines and heartbeat.** The assistant can schedule its own recurring
   tasks, and an optional heartbeat reviews recent conversations, keeps an
   interests list and open loops, and messages only when something's worth it.
+  A tick where nothing changed (no new conversation, finished job, failed
+  run, due loop) skips the model entirely (`agent/heartbeat.go`).
+- **Budgets and retention.** Prompt files, the system prompt, the heartbeat's
+  digest and each turn's history-plus-context have character budgets that
+  tests and the dashboard enforce (`agent/budget.go`). Nightly maintenance
+  gzips and expires job transcripts, sweeps job scratch dirs, prunes old rows
+  and `.bak` copies, and reports every error (`exo prune -n` shows what it
+  would remove). Temporary changes go in a ledger with an expiry and an undo
+  that runs on its own or asks first (`exo temp`); schedule entries take an
+  `until`.
 - **Cross-site guard.** Every dashboard POST (exo's and a deployment's
   mounted routes) must come from the dashboard's own pages: `Sec-Fetch-Site`
   same-origin or none, or an `Origin` naming the host. A request with neither

@@ -45,11 +45,18 @@ type App struct {
 	Web   *web.Server      // routes, pages and nav can be added before Run
 	MCP   *http.ServeMux   // the MCP listener's routes (/mcp/ is taken)
 
+	// Retention is what nightly maintenance keeps (DefaultRetention unless
+	// changed before Run); PruneKV and KeepNewest add a deployment's own.
+	Retention Retention
+
 	builtins []builtin
 	checks   []func(context.Context) string
 	starts   []func(context.Context) error
 	servers  []*http.Server
 	stop     context.CancelFunc
+	pruneKV  map[string]int
+	keep     []keepRule
+	undo     func(ctx context.Context, id, cmd string) (string, error) // tests: run undos without systemd
 }
 
 type builtin struct {
@@ -96,11 +103,12 @@ func New(cfg *config.Config) (*App, error) {
 	reg.SetInterests = a.SetInterests
 	reg.SetLoops = a.SetLoops
 	reg.Send = a.Send
-	ap := &App{Cfg: cfg, Store: st, Agent: a, Reg: reg, Jobs: runner, MCP: http.NewServeMux()}
+	ap := &App{Cfg: cfg, Store: st, Agent: a, Reg: reg, Jobs: runner, MCP: http.NewServeMux(), Retention: DefaultRetention}
 	ap.Sched = &sched.Scheduler{Cfg: cfg, Store: st, Deliver: a.DeliverTarget, DeliverFiles: a.DeliverTargetFiles, Routine: a.RunRoutine,
 		Builtin: map[string]func(context.Context) (string, error){
-			"maintenance": ap.maintenance,
-			"heartbeat":   a.Heartbeat,
+			"maintenance":  ap.maintenance,
+			"heartbeat":    a.Heartbeat,
+			"temp-changes": ap.tempChanges,
 		}}
 	a.Sched = ap.Sched
 	ap.Web = &web.Server{Agent: a, Store: st, Sched: ap.Sched, Senders: a.Senders}
@@ -192,10 +200,17 @@ func (ap *App) Run(ctx context.Context) error {
 	ap.Listen("mcp", cfg.MCPAddr, ap.MCP)
 
 	admin := "" // maintenance problems go to the first admin on Discord
+	home := ""  // temp changes that need a decision go where the first admin is texted
 	for _, p := range cfg.People {
-		if p.Admin && p.Discord != "" {
+		if p.Admin && p.Discord != "" && admin == "" {
 			admin = "discord:" + p.ID
-			break
+		}
+		if p.Admin && home == "" {
+			if p.HomeChat != "" {
+				home = p.HomeChat + ":" + p.ID
+			} else if p.Discord != "" {
+				home = "discord:" + p.ID
+			}
 		}
 	}
 	sc := ap.Sched
@@ -206,6 +221,7 @@ func (ap *App) Run(ctx context.Context) error {
 	entries := []sched.Entry{
 		{Name: "maintenance", Cron: "40 3 * * *", Cmd: "maintenance", Deliver: admin},
 		{Name: "heartbeat", Cron: heartbeat, Cmd: "heartbeat"},
+		{Name: "temp-changes", Cron: "5 * * * *", Cmd: "temp-changes", Deliver: home},
 	}
 	for _, b := range ap.builtins {
 		sc.Builtin[b.entry.Name] = b.run
@@ -232,21 +248,24 @@ func (ap *App) Run(ctx context.Context) error {
 	return nil
 }
 
-// maintenance runs nightly: prune traces, back the database up, clear old
-// inbound/outbound media, re-test the Claude path when the CLI changes, and
-// run the added checks. It reports only problems.
+// tempChanges is the hourly temp-change check (no model): it reverts or asks
+// about what expired within the hour instead of waiting for the night.
+func (ap *App) tempChanges(ctx context.Context) (string, error) {
+	return strings.Join(ap.TempCheck(ctx, false), "\n"), nil
+}
+
+// maintenance runs nightly: apply the retention (Prune), back the database
+// up, handle expired temporary changes, re-test the Claude path when the
+// CLI changes, check prompt budgets, and run the added checks. It reports
+// only problems (and temporary changes it put back or needs a word on); what
+// it pruned is kept in kv "prune:last" for the dashboard.
 func (ap *App) maintenance(ctx context.Context) (string, error) {
 	cfg, st := ap.Cfg, ap.Store
-	st.Prune(ctx, 30)
-	var problems []string
-	for _, dir := range []string{cfg.Path("inbox"), cfg.Path("outbox")} {
-		ents, _ := os.ReadDir(dir)
-		for _, e := range ents {
-			if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > 14*24*time.Hour {
-				os.Remove(filepath.Join(dir, e.Name()))
-			}
-		}
-	}
+	ctx = context.WithValue(ctx, maintKey{}, true)
+	removed, problems := ap.Prune(ctx, false)
+	summary := FormatPrune(removed, problems, false)
+	st.Set("prune:last", time.Now().Format(time.RFC3339)+"\n"+summary)
+	slog.Info("maintenance pruned", "summary", strings.ReplaceAll(strings.TrimSpace(summary), "\n", "; "))
 	if dir := cfg.BackupDir; dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			problems = append(problems, "backup dir: "+err.Error())
@@ -264,7 +283,11 @@ func (ap *App) maintenance(ctx context.Context) (string, error) {
 			}
 		}
 	}
+	problems = append(problems, ap.TempCheck(ctx, false)...)
 	if p := ap.Agent.SelfCheck(ctx); p != "" {
+		problems = append(problems, p)
+	}
+	if p := ap.Agent.OverBudget(); p != "" {
 		problems = append(problems, p)
 	}
 	for _, f := range ap.checks {

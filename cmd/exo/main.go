@@ -2,6 +2,8 @@
 //
 //	exo serve    run everything (the systemd unit)
 //	exo budget   measure the fixed token cost of each person's prompt and tools
+//	exo prune    apply the retention now (-n: dry run, -all: every path)
+//	exo temp     the temp-change ledger (list, add, check, undo, done)
 package main
 
 import (
@@ -39,7 +41,10 @@ func main() {
 	case "budget":
 		a.Budget(os.Stdout)
 	default:
-		err = fmt.Errorf("unknown command %q", cmd)
+		var ok bool
+		if ok, err = a.Command(context.Background(), cmd, os.Args[2:], os.Stdout); !ok {
+			err = fmt.Errorf("unknown command %q", cmd)
+		}
 	}
 	if err != nil {
 		fatal(err)

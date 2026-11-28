@@ -58,6 +58,10 @@ type Agent struct {
 	OnInterests func(person, text string) error // after the heartbeat saves the interests list
 	Gear        func() string                   // which local model setup is loaded, for shadow rows (default: the model name)
 	Busy        func() bool                     // something heavy is running on the box, for shadow rows
+	// HeartbeatWake adds a deployment's own reasons to run a heartbeat that
+	// would be skipped as idle (a market window, say): given the start of
+	// the last heartbeat that ran the model, it returns a reason or "".
+	HeartbeatWake func(last, now time.Time) string
 
 	chans  map[string]*Channel
 	mu     sync.Mutex
@@ -359,16 +363,18 @@ func (a *Agent) runTurnOpts(ctx context.Context, p *config.Person, id int64, ch,
 	if o.system != "" {
 		system += "\n\n" + o.system
 	}
-	user := a.contextBlock(p, ch, input, eng.Name(), id, o.replay || o.noRecent)
+	var history []engine.Msg
+	if !replay && !o.noRecent {
+		history = a.history(p, id, ch)
+	}
+	// History and retrieval share the channel's context budget; history's
+	// window is fixed between jumps (caching), so retrieval gets what's left.
+	user := a.contextBlock(p, ch, input, eng.Name(), id, o.replay || o.noRecent, capsFor(ch).Budget-len(engine.HistoryText(history)))
 	blocks := []engine.Block{{Text: user}}
 	for _, im := range images {
 		blocks = append(blocks, engine.Block{Image: im})
 	}
 	seq := 0
-	var history []engine.Msg
-	if !replay && !o.noRecent {
-		history = a.history(p, id, ch)
-	}
 	req := &engine.Request{TurnID: id, System: system, History: history, User: blocks, BuiltIns: a.builtIns(local), Model: o.model, Effort: a.effortFor(eng, o),
 		Trace: func(kind, name, body string) {
 			if kind == "tool_call" && (name == "WebFetch" || name == "WebSearch") {
@@ -665,7 +671,11 @@ func (a *Agent) reminderLoop(ctx context.Context) {
 // localBrainNote tells the local model what it can't do (shadow runs add it too).
 const localBrainNote = "Brain: the local model (Claude is unavailable). Background jobs run on the local model too (slower; give them small, concrete tasks); shell is read-only: say what you'd run for anything that changes the server, or hand it to a job. Before saying anything is running, done, sent, scheduled or being worked on, check it with a tool in this turn (jobs, shell, reminder); if you can't do something, say so plainly. Use the toolbox for live facts (the server, jobs, notes, older conversations) instead of memory, and web_search anything you'd otherwise be guessing; search results are only snippets, so fetch the best page before stating specifics. When asked for something done, do it with a tool (usually start_job) rather than describing a plan or asking whether you should. Never tell the person you can't do something you haven't tried with a tool this turn. Never narrate checking or fixing your own answer: they only see the final message.\n"
 
-func (a *Agent) contextBlock(p *config.Person, ch, input, eng string, turnID int64, replay bool) string {
+// contextBlock is the <context> block before the message: the fixed lines
+// (time, channel, the local-brain note) and then retrieval, cut to fit budget
+// characters (related older turns go first, then note hints, facts,
+// reminders, running jobs).
+func (a *Agent) contextBlock(p *config.Person, ch, input, eng string, turnID int64, replay bool, budget int) string {
 	now := time.Now().In(a.Cfg.Loc)
 	var b strings.Builder
 	b.WriteString("<context>\n")
@@ -677,6 +687,19 @@ func (a *Agent) contextBlock(p *config.Person, ch, input, eng string, turnID int
 			b.WriteString(a.checkedNote(p, turnID))
 		}
 	}
+	secs := a.retrieval(p, input, turnID, replay)
+	order := []string{"related", "facts", "notes", "reminders", "jobs"}
+	trim := []string{"related", "notes", "facts", "reminders", "jobs"}
+	const end = "</context>\n\n"
+	b.WriteString(fitSections(secs, order, trim, max(budget-b.Len()-len(end), 0), "\n"))
+	b.WriteString(end)
+	b.WriteString(input)
+	return b.String()
+}
+
+// retrieval gathers the optional parts of the context block.
+func (a *Agent) retrieval(p *config.Person, input string, turnID int64, replay bool) map[string]*section {
+	secs := map[string]*section{}
 	if !replay && len(keywords(input)) > 0 {
 		// Older exchanges about the same things, beyond the recent window.
 		if hits, err := a.Store.SearchTurns(p.ID, strings.Join(keywords(input), " "), 8); err == nil {
@@ -696,19 +719,26 @@ func (a *Agent) contextBlock(p *config.Person, ch, input, eng string, turnID int
 				}
 			}
 			if len(lines) > 0 {
-				b.WriteString("Earlier conversations that may be related:\n" + strings.Join(lines, "\n") + "\n")
+				secs["related"] = &section{title: "Earlier conversations that may be related:", lines: lines}
 			}
 		}
 	}
 	if facts, _ := a.Store.SearchFacts(p.ID, input, factHits); len(facts) > 0 {
-		b.WriteString("Saved facts that may be relevant:\n")
+		s := &section{title: "Saved facts that may be relevant:"}
 		for _, f := range facts {
-			fmt.Fprintf(&b, "- (%d) %s\n", f.ID, f.Text)
+			s.lines = append(s.lines, fmt.Sprintf("- (%d) %s", f.ID, oneLine(f.Text, 400)))
 		}
+		secs["facts"] = s
 	}
 	if p.Admin && !replay {
 		if hints := a.noteHints(input); hints != "" {
-			b.WriteString("Notes matching what they mentioned (read with notes_read before relying on details):\n" + hints)
+			s := &section{title: "Notes matching what they mentioned (read with notes_read before relying on details):"}
+			for _, l := range strings.Split(hints, "\n") {
+				if strings.TrimSpace(l) != "" {
+					s.lines = append(s.lines, l)
+				}
+			}
+			secs["notes"] = s
 		}
 	}
 	if rs := a.Store.PendingReminders(p.ID, 5); len(rs) > 0 {
@@ -716,7 +746,7 @@ func (a *Agent) contextBlock(p *config.Person, ch, input, eng string, turnID int
 		for _, r := range rs {
 			xs = append(xs, fmt.Sprintf("#%d %s: %s", r.ID, time.Unix(r.At, 0).In(a.Cfg.Loc).Format("Mon Jan 2 3:04PM"), oneLine(r.Text, 80)))
 		}
-		b.WriteString("Upcoming reminders: " + strings.Join(xs, "; ") + "\n")
+		secs["reminders"] = &section{lines: []string{"Upcoming reminders: " + strings.Join(xs, "; ")}}
 	}
 	if p.Admin {
 		rows, err := a.Store.DB.Query(`SELECT id,task,COALESCE(started,created) FROM jobs WHERE person=? AND status IN ('queued','running') ORDER BY id LIMIT 5`, p.ID)
@@ -730,13 +760,11 @@ func (a *Agent) contextBlock(p *config.Person, ch, input, eng string, turnID int
 			}
 			rows.Close()
 			if len(js) > 0 {
-				b.WriteString("Background jobs running: " + strings.Join(js, "; ") + "\n")
+				secs["jobs"] = &section{lines: []string{"Background jobs running: " + strings.Join(js, "; ")}}
 			}
 		}
 	}
-	b.WriteString("</context>\n\n")
-	b.WriteString(input)
-	return b.String()
+	return secs
 }
 
 func (a *Agent) systemPrompt(p *config.Person) (string, string) {
@@ -745,21 +773,22 @@ func (a *Agent) systemPrompt(p *config.Person) (string, string) {
 	if p.Admin {
 		parts = append(parts, a.prompt("admin.md"))
 	}
+	// The dynamic parts are capped here as well as where they're saved, so the
+	// whole stays inside BudgetSystem whatever is in the database.
 	if facts, _ := a.Store.Facts(p.ID, true); len(facts) > 0 {
-		var b strings.Builder
-		fmt.Fprintf(&b, "# About %s\n", p.Name)
+		var lines []string
 		for _, f := range facts {
-			b.WriteString("- " + f.Text + "\n")
+			lines = append(lines, "- "+oneLine(f.Text, maxPinnedChars))
 		}
-		parts = append(parts, b.String())
+		parts = append(parts, factsHeading(p.Name)+capLines(strings.Join(lines, "\n"), maxPinnedChars))
 	}
-	if in := strings.TrimSpace(a.Store.Get("interests:" + p.ID)); in != "" {
-		parts = append(parts, fmt.Sprintf("# What %s is into lately (kept current by your heartbeat)\n%s", p.Name, in))
+	if in := capLines(a.Store.Get("interests:"+p.ID), maxInterestsChars); in != "" {
+		parts = append(parts, interestsHeading(p.Name)+in)
 	}
 	// Open loops change at most hourly (the heartbeat keeps them), so they sit
 	// here with the other slow context, where prompt caches can reuse them.
-	if loops := strings.TrimSpace(a.Store.Get("loops:" + p.ID)); loops != "" {
-		parts = append(parts, "# Open loops (pending, promised or unresolved; kept by your heartbeat)\n"+loops)
+	if loops := capLines(a.Store.Get("loops:"+p.ID), maxLoopsChars); loops != "" {
+		parts = append(parts, loopsHeading+loops)
 	}
 	s := strings.Join(parts, "\n\n")
 	sum := sha256.Sum256([]byte(s))
@@ -837,6 +866,9 @@ func (a *Agent) SavePrompt(name, content string) error {
 		return fmt.Errorf("unknown prompt %q", name)
 	}
 	content = strings.ReplaceAll(content, "\r\n", "\n")
+	if max := promptBudget(name); max > 0 && len(strings.TrimSpace(content)) > max {
+		return fmt.Errorf("%s would be %d characters; its budget is %d. Trim it, or move detail into a note it tells the model to read", name, len(strings.TrimSpace(content)), max)
+	}
 	if err := os.WriteFile(a.Cfg.Path("prompts", name), []byte(content), 0o644); err != nil {
 		return err
 	}
@@ -914,14 +946,6 @@ func oneLine(s string, n int) string {
 		return s[:n] + "…"
 	}
 	return s
-}
-
-func total(lines []string) int {
-	n := 0
-	for _, l := range lines {
-		n += len(l) + 1
-	}
-	return n
 }
 
 func clipErr(err error) string {
